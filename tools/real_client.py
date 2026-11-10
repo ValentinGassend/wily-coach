@@ -1911,7 +1911,9 @@ def spray(target, eye, secs=3.5, keep=None, pre=None, pace=None):
             time.sleep(0.01)
     finally:
         send("-attack")
-    if pace is None and len(seen_imp) >= 5:   # a held spray's bullets: its table learns from them
+    if pace is None and len(seen_imp) >= 5 and os.environ.get("COACH_SPRAY_LEARN"):   # a held spray's bullets: its table
+        # learns from them when asked only (10/11: learning in every run, the AK's row ran off to the caps, then labs'
+        # misses moved both rows within an hour: no two runs of the test client were the same client)
         _spray_learn(weapon, list(seen_imp))
     if os.environ.get("COACH_SHOTLOG") and seen_imp:   # 26/10: is a miss the pull's (one side always) or the spread's?
         imp = sorted(seen_imp)
