@@ -1064,7 +1064,10 @@ public partial class CoachReplay
     {
         if (sess == null || !Humans().Any()) return;
         if (paused) { SetMain(PausedHtml()); return; }
-        if (blockIdx < 0) { Welcome(); AddTimer(4f, NextBlock); return; }
+        // its first block only while it has none yet (10/11, round 27, Vertigo's Crossfire: the game came back on the server 2 s
+        // into the welcome, this timer was set a second time and fired after the session's own had begun the block: the next
+        // block, the session's end, "0/0 exercices"; a session of several blocks lost its first)
+        if (blockIdx < 0) { Welcome(); var s1 = sess; AddTimer(4f, () => { if (sess == s1 && blockIdx < 0 && !paused) NextBlock(); }); return; }
         var b = sess.Blocks[blockIdx];
         if (Server.MapName != b.Map) { ChangeMap(b.Map); return; }
         if (drill != null) RunDrill(drill); else NextDrill();
