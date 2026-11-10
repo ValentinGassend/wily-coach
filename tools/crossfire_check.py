@@ -3,7 +3,8 @@ compte qu'ils ne sont pas cachés à la base. Ils sont derrière absolument rien
 moi"; the base's Ts had been unseen at Top Mid behind the round's smokes, the drill has none): from each spot's eyes, the
 bullet's line to each of its peeks' start, head and chest (the plugin's css_dbglos, the map's own walls); a start in
 plain sight is no peek. resources/crossfire_checked.json keeps per map and spot which starts are seen; crossfire.drills
-leaves those out, and a hold spot with fewer than 3 others.
+leaves those out, and a hold spot with fewer than 3 others. Its spray pairs too (10/11): where each of the two is first
+seen, and whether its head and chest are in sight where it stops (crossfire.pair_ok).
 
     python tools/crossfire_check.py [maps] [--again]"""
 import os
@@ -22,6 +23,8 @@ BOOK = os.path.join(HERE, "resources", "crossfire_checked.json")
 
 
 REACH = {}   # the last check's: per spot, each peek seen once on its way
+PAIRS = {}   # the last check's: per spot, per spray pair (None: not near), {"seen": where each of its two is first seen (2D u,
+# None: never), "open": its head and chest in the holder's line where it stops}
 
 
 def key(mp, sp):
@@ -54,6 +57,26 @@ def check(mp, spots, log=print):
                 for up in (62, 40):
                     rows.append([round(e[0], 1), round(e[1], 1), round(e[2] + 64, 1), round(q[0], 1), round(q[1], 1), round(q[2] + up, 1)])
                     who.append((key(mp, sp), ("reach", i)))
+        # the spray's near pairs (10/11, round 28: Inferno's T Apps sprayed at 600-711 u, the far one in plain sight down its
+        # corridor from 760 u while its way ends at 522 u): each one's way, every other frame, head and chest
+        for pi, pr in enumerate(sp.get("pairs") or []):
+            if not all(((q["end"][0] - e[0]) ** 2 + (q["end"][1] - e[1]) ** 2) ** 0.5 < crossfire.SPRAY_MAX for q in pr):
+                continue
+            for mi, q in enumerate(pr):
+                P = q["path"]
+                for k in range(0, len(P) // 5, 2):
+                    x = P[k * 5:k * 5 + 3]
+                    for up in (62, 40):
+                        rows.append([round(e[0], 1), round(e[1], 1), round(e[2] + 64, 1), round(x[0], 1), round(x[1], 1), round(x[2] + up, 1)])
+                        who.append((key(mp, sp), ("pair", pi, mi, k)))
+                # where it stops for the spray, its way's end: its head and chest in the holder's line (10/11, all 12 maps
+                # traced part by part: the sprays the real-client battery passes stop with a side or the legs behind cover,
+                # Ancient's Cave, Nuke's Ramp; the ones it fails every round stop with the chest hidden, Train's A Site, or
+                # out of his sight altogether, Vertigo's Side, 2 of 3 bullets into the wall)
+                x = P[-5:-2]
+                for up in (62, 46):
+                    rows.append([round(e[0], 1), round(e[1], 1), round(e[2] + 64, 1), round(x[0], 1), round(x[1], 1), round(x[2] + up, 1)])
+                    who.append((key(mp, sp), ("open", pi, mi)))
     fin, fout = os.path.join(replay.COACH, "los_in.json"), os.path.join(replay.COACH, "los_out.json")
     with open(fin, "w", encoding="utf-8") as fh:
         json.dump(rows, fh)
@@ -77,14 +100,37 @@ def check(mp, spots, log=print):
         return None
     out = {key(mp, sp): [False] * len(sp.get("peeks") or []) for sp in spots}
     reach = {key(mp, sp): [False] * len(sp.get("peeks") or []) for sp in spots}
+    first = {}   # (spot, pair, one) -> its first frame in sight
+    shut = set()   # (spot, pair, one) whose head or chest is out of the holder's line where it stops
     for (k, i), f in zip(who, res):
+        if isinstance(i, tuple) and i[0] == "open":
+            if f <= 0.98:
+                shut.add((k, i[1], i[2]))
+            continue
         if f > 0.98:
-            if isinstance(i, tuple):
+            if isinstance(i, tuple) and i[0] == "pair":
+                c = (k, i[1], i[2])
+                first[c] = min(first.get(c, i[3]), i[3])
+            elif isinstance(i, tuple):
                 reach[k][i[1]] = True
             else:
                 out[k][i] = True
     REACH.clear()
     REACH.update(reach)
+    PAIRS.clear()
+    traced = {(w[0], w[1][1]) for w in who if isinstance(w[1], tuple) and w[1][0] == "pair"}
+    for sp in spots:
+        k, e = key(mp, sp), sp["pos"]
+        PAIRS[k] = []
+        for pi, pr in enumerate(sp.get("pairs") or []):
+            if (k, pi) not in traced:
+                PAIRS[k].append(None)   # not a near one: not traced
+                continue
+            seen = []
+            for mi, q in enumerate(pr):
+                fr = first.get((k, pi, mi))
+                seen.append(None if fr is None else round(((q["path"][fr * 5] - e[0]) ** 2 + (q["path"][fr * 5 + 1] - e[1]) ** 2) ** 0.5))
+            PAIRS[k].append({"seen": seen, "open": [(k, pi, mi) not in shut for mi in range(len(pr))]})
     log(f"{mp}: {len(res)} lines traced", flush=True)
     return out
 
@@ -94,8 +140,9 @@ def main():
     book = config.read_json(BOOK, {}) or {}
     for mp in maps:
         spots = [sp for sp in (crossfire.load(mp, build=False) or {}).get("spots") or [] if sp.get("peeks")]
-        if "--again" not in sys.argv:   # never checked, or checked before the reach was (27/10)
-            spots = [sp for sp in spots if key(mp, sp) not in book or (book[key(mp, sp)] or {}).get("reach") is None]
+        if "--again" not in sys.argv:   # never checked, or checked before the reach was (27/10), or its pairs (10/11)
+            spots = [sp for sp in spots if key(mp, sp) not in book or (book[key(mp, sp)] or {}).get("reach") is None
+                     or (sp.get("pairs") and (book[key(mp, sp)] or {}).get("pairs") is None)]
         if not spots:
             print(mp, "nothing to check", flush=True)
             continue
@@ -108,11 +155,16 @@ def main():
             continue
         for sp in spots:
             k = key(mp, sp)
-            book[k] = {"seen": res[k], "reach": REACH.get(k), "zone": sp.get("zone"), "side": sp.get("side"), "checked": time.strftime("%Y-%m-%d")}
+            book[k] = {"seen": res[k], "reach": REACH.get(k), "pairs": PAIRS.get(k), "zone": sp.get("zone"), "side": sp.get("side"),
+                       "checked": time.strftime("%Y-%m-%d")}
             n, s = len(res[k]), sum(res[k])
             ok = sum(1 for a, b in zip(res[k], REACH.get(k) or [True] * n) if not a and b)
+            near = [x for x in PAIRS.get(k) or [] if x is not None]
+            sp_ok = sum(1 for x in near if crossfire.pair_ok(x))
             print(f"  {sp.get('side')} {sp.get('zone')} {[round(v) for v in sp['pos']]}: {s}/{n} starts in plain sight, "
-                  f"{n - sum(REACH.get(k) or [True] * n)} never in sight -> {ok} peeks" + (" -> no hold drill" if ok < 3 else ""), flush=True)
+                  f"{n - sum(REACH.get(k) or [True] * n)} never in sight -> {ok} peeks" + (" -> no hold drill" if ok < 3 else "")
+                  + (f"; spray pairs first seen at {[x['seen'] for x in near]} u, clear where they stop "
+                     f"{[x['open'] for x in near]} -> {sp_ok} of {len(near)} kept" if near else ""), flush=True)
         config.write_json(BOOK, book)
     print("written", BOOK, flush=True)
 
