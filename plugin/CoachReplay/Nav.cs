@@ -12,7 +12,6 @@ namespace CoachReplay;
 
 public partial class CoachReplay
 {
-    string? navMap;
     Vector3[][] navPts = Array.Empty<Vector3[]>();       // each area's corners
     Vector3[] navCen = Array.Empty<Vector3>();           // its middle
     (float X0, float Y0, float X1, float Y1)[] navBox = Array.Empty<(float, float, float, float)>();
@@ -27,76 +26,92 @@ public partial class CoachReplay
     readonly HashSet<(int, int)> navBlocked = new();
     readonly Dictionary<int, (int Next, float Best, int At, int Last)> navProg = new();   // its last call too: a hold is no try
     readonly Dictionary<int, (Vector3 Goal, int At)> navFail = new();   // its last way not found: to what, when
-    readonly Dictionary<(int, int), List<int>> navGrid = new();   // 256 u cells -> the areas over them
+    Dictionary<(int, int), List<int>> navGrid = new();   // 256 u cells -> the areas over them
     const float NavCell = 256f;
 
-    void NavLoad()
+    // read on the tables' thread (Tables.cs), nothing of the plugin's touched there; what it returns puts the mesh in place, on
+    // the game's thread
+    Action NavRead(string dir, string mp)
     {
-        var mp = Server.MapName;
-        if (mp == navMap) return;
-        navMap = mp; navGrid.Clear(); navBlocked.Clear(); navProg.Clear(); navFail.Clear();
-        navPts = Array.Empty<Vector3[]>(); navCen = Array.Empty<Vector3>(); navBox = Array.Empty<(float, float, float, float)>();
-        navLinks = Array.Empty<List<(int, Vector3, float, int)>>(); navLad = Array.Empty<(Vector3, Vector3)>();
-        var fn = Path.Combine(Dir, "nav", $"{mp}.json");
-        if (!File.Exists(fn)) { Log("nav: none for {m}", mp); return; }
-        try
-        {
-            using var doc = JsonDocument.Parse(File.ReadAllText(fn));
-            var r = doc.RootElement;
-            var ids = new Dictionary<int, int>();
-            var pts = new List<Vector3[]>();
-            foreach (var a in r.GetProperty("areas").EnumerateArray())
+        var said = new List<string>();
+        var nPts = Array.Empty<Vector3[]>();
+        var nCen = Array.Empty<Vector3>();
+        var nBox = Array.Empty<(float X0, float Y0, float X1, float Y1)>();
+        var nLinks = Array.Empty<List<(int To, Vector3 Mid, float Rise, int Lad)>>();
+        var nLad = Array.Empty<(Vector3 Foot, Vector3 Top)>();
+        var grid = new Dictionary<(int, int), List<int>>();
+        var fn = Path.Combine(dir, "nav", $"{mp}.json");
+        if (!File.Exists(fn)) said.Add($"nav: none for {mp}");
+        else
+            try
             {
-                var v = a.EnumerateArray().Select(x => x.GetSingle()).ToArray();
-                var p = new Vector3[(v.Length - 1) / 3];
-                for (int i = 0; i < p.Length; i++) p[i] = new Vector3(v[1 + 3 * i], v[2 + 3 * i], v[3 + 3 * i]);
-                ids[(int)v[0]] = pts.Count;
-                pts.Add(p);
-            }
-            navPts = pts.ToArray();
-            navCen = navPts.Select(p => p.Aggregate(Vector3.Zero, (s, q) => s + q) / p.Length).ToArray();
-            navBox = navPts.Select(p => (p.Min(q => q.X), p.Min(q => q.Y), p.Max(q => q.X), p.Max(q => q.Y))).ToArray();
-            navLinks = navPts.Select(_ => new List<(int, Vector3, float, int)>()).ToArray();
-            foreach (var l in r.GetProperty("links").EnumerateArray())
-            {
-                var v = l.EnumerateArray().Select(x => x.GetSingle()).ToArray();
-                if (ids.TryGetValue((int)v[0], out var u) && ids.TryGetValue((int)v[1], out var w))
-                    navLinks[u].Add((w, new Vector3(v[2], v[3], v[4]), v[5], -1));
-            }
-            // its ladders: [id, foot x y z, top x y z, [areas off its foot], [areas off its top]]
-            var lads = new List<(Vector3, Vector3)>();
-            if (r.TryGetProperty("ladders", out var la))
-                foreach (var l in la.EnumerateArray())
+                using var doc = JsonDocument.Parse(File.ReadAllText(fn));
+                var r = doc.RootElement;
+                var ids = new Dictionary<int, int>();
+                var pts = new List<Vector3[]>();
+                foreach (var a in r.GetProperty("areas").EnumerateArray())
                 {
-                    var e = l.EnumerateArray().ToArray();
-                    if (e.Length < 9) continue;
-                    var foot = new Vector3(e[1].GetSingle(), e[2].GetSingle(), e[3].GetSingle());
-                    var top = new Vector3(e[4].GetSingle(), e[5].GetSingle(), e[6].GetSingle());
-                    var li = lads.Count;
-                    lads.Add((foot, top));
-                    var bots = e[7].EnumerateArray().Select(x => x.GetInt32()).Where(ids.ContainsKey).Select(x => ids[x]).ToList();
-                    var tops = e[8].EnumerateArray().Select(x => x.GetInt32()).Where(ids.ContainsKey).Select(x => ids[x]).ToList();
-                    foreach (var b in bots)
-                        foreach (var t in tops)
+                    var v = a.EnumerateArray().Select(x => x.GetSingle()).ToArray();
+                    var p = new Vector3[(v.Length - 1) / 3];
+                    for (int i = 0; i < p.Length; i++) p[i] = new Vector3(v[1 + 3 * i], v[2 + 3 * i], v[3 + 3 * i]);
+                    ids[(int)v[0]] = pts.Count;
+                    pts.Add(p);
+                }
+                nPts = pts.ToArray();
+                nCen = nPts.Select(p => p.Aggregate(Vector3.Zero, (s, q) => s + q) / p.Length).ToArray();
+                nBox = nPts.Select(p => (p.Min(q => q.X), p.Min(q => q.Y), p.Max(q => q.X), p.Max(q => q.Y))).ToArray();
+                nLinks = nPts.Select(_ => new List<(int To, Vector3 Mid, float Rise, int Lad)>()).ToArray();
+                foreach (var l in r.GetProperty("links").EnumerateArray())
+                {
+                    var v = l.EnumerateArray().Select(x => x.GetSingle()).ToArray();
+                    if (ids.TryGetValue((int)v[0], out var u) && ids.TryGetValue((int)v[1], out var w))
+                        nLinks[u].Add((w, new Vector3(v[2], v[3], v[4]), v[5], -1));
+                }
+                // its ladders: [id, foot x y z, top x y z, [areas off its foot], [areas off its top]]
+                var lads = new List<(Vector3 Foot, Vector3 Top)>();
+                if (r.TryGetProperty("ladders", out var la))
+                    foreach (var l in la.EnumerateArray())
+                    {
+                        var e = l.EnumerateArray().ToArray();
+                        if (e.Length < 9) continue;
+                        var foot = new Vector3(e[1].GetSingle(), e[2].GetSingle(), e[3].GetSingle());
+                        var top = new Vector3(e[4].GetSingle(), e[5].GetSingle(), e[6].GetSingle());
+                        var li = lads.Count;
+                        lads.Add((foot, top));
+                        var bots = e[7].EnumerateArray().Select(x => x.GetInt32()).Where(ids.ContainsKey).Select(x => ids[x]).ToList();
+                        var tops = e[8].EnumerateArray().Select(x => x.GetInt32()).Where(ids.ContainsKey).Select(x => ids[x]).ToList();
+                        foreach (var b in bots)
+                            foreach (var t in tops)
+                            {
+                                nLinks[b].Add((t, foot, 0f, li));
+                                nLinks[t].Add((b, top, 0f, li));
+                            }
+                    }
+                nLad = lads.ToArray();
+                for (int i = 0; i < nBox.Length; i++)
+                {
+                    var b = nBox[i];
+                    for (int cx = (int)MathF.Floor(b.X0 / NavCell); cx <= (int)MathF.Floor(b.X1 / NavCell); cx++)
+                        for (int cy = (int)MathF.Floor(b.Y0 / NavCell); cy <= (int)MathF.Floor(b.Y1 / NavCell); cy++)
                         {
-                            navLinks[b].Add((t, foot, 0f, li));
-                            navLinks[t].Add((b, top, 0f, li));
+                            if (!grid.TryGetValue((cx, cy), out var lst)) grid[(cx, cy)] = lst = new List<int>();
+                            lst.Add(i);
                         }
                 }
-            navLad = lads.ToArray();
-            for (int i = 0; i < navBox.Length; i++)
-            {
-                var b = navBox[i];
-                for (int cx = (int)MathF.Floor(b.X0 / NavCell); cx <= (int)MathF.Floor(b.X1 / NavCell); cx++)
-                    for (int cy = (int)MathF.Floor(b.Y0 / NavCell); cy <= (int)MathF.Floor(b.Y1 / NavCell); cy++)
-                    {
-                        if (!navGrid.TryGetValue((cx, cy), out var lst)) navGrid[(cx, cy)] = lst = new List<int>();
-                        lst.Add(i);
-                    }
+                said.Add($"nav: {nPts.Length} areas, {nLad.Length} ladders read for {mp}");
             }
-            Log("nav: {n} areas, {l} ladders read for {m}", navPts.Length, navLad.Length, mp);
-        }
-        catch (Exception e) { Log("nav: {m}", e.Message); navPts = Array.Empty<Vector3[]>(); }
+            catch (Exception ex)
+            {   // none of it rather than a part: the bots then keep to their real ways
+                said.Add($"nav: {ex.Message}");
+                nPts = Array.Empty<Vector3[]>(); nCen = Array.Empty<Vector3>(); nBox = Array.Empty<(float X0, float Y0, float X1, float Y1)>();
+                nLinks = Array.Empty<List<(int To, Vector3 Mid, float Rise, int Lad)>>(); nLad = Array.Empty<(Vector3 Foot, Vector3 Top)>();
+                grid = new Dictionary<(int, int), List<int>>();
+            }
+        return () =>
+        {
+            navPts = nPts; navCen = nCen; navBox = nBox; navLinks = nLinks; navLad = nLad; navGrid = grid;
+            foreach (var line in said) Log("{m}", line);
+        };
     }
 
     // the floor's height of an area under (x, y): its corners' plane (the first three), else their mean
