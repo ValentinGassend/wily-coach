@@ -1659,6 +1659,9 @@ VIEW_LAG = 0.2
 # 10/11: at 1.0 all 63 of its blasts at crossers (80+ u/s, rounds 23-26) went 7-38 u ahead of them, 21 u at the median, none
 # behind (the plugin's impacts): its lead cut to under a third
 PUMP_LEAD = 0.3
+# an AWP's lead, times LEAD (10/11: at 1.0, 167 of its 197 shots at crossers in rounds 23-28 went ahead of them, 20 u at the
+# median at 150-400 u, 18 behind; a single shot, its bolt after a miss: cut as the shotgun's was)
+SNIPER_LEAD = 0.4
 SHOT_LAG = 0.13   # the settle before a shot only (30/10, his order: his 0.3 s, a first damage in 0.4-0.5 s; 0.2 held its first shot 0.36 s at the median)
 PRESS_R8 = 0.33   # the R8's left click held till its hammer falls (29/10)
 
@@ -2178,7 +2181,7 @@ def fight(sniper=False, timeout=6.0, reach=None, pump=None, far_switch=False):
 
         # a shotgun leads them more (03/11, rounds 20-21: its misses on movers 27 behind them, 12 ahead, at 170 u and 150 u/s
         # across; the M4's 127 behind, 113 ahead)
-        lead = LEAD * (PUMP_LEAD if pump else 1.0)
+        lead = LEAD * (PUMP_LEAD if pump else SNIPER_LEAD if sniper else 1.0)
 
         def point(slot=slot, drop=drop):
             nonlocal b
