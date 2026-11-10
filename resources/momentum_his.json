@@ -1,0 +1,141 @@
+{
+ "about": "The jumps the user showed on the training server (20/10, his recording rush/20261020_blockout_023626.mp4: a smoke dropped where each one starts and one where it lands): where he stood when he dropped each (the smoke itself can roll: the cart's fell 23 u into its bed). 3 of the 7 are in none of the base's 6,991 jumps of the map. 20/10 22:27 video (18:51 and 19:03): one more, from where the anti-push boost lands (an HE dropped at each end, \"!jump\" did not work): \"un autre anti-push B\", \"il est vraiment pas évident à rentrer\".",
+ "de_fachwerk": [
+  {
+   "id": "his:b-high-cart",
+   "kind": "jump",
+   "side": "CT",
+   "zone": "B Site",
+   "from": [
+    1293.0,
+    -421.0,
+    11.0
+   ],
+   "to": [
+    1435.0,
+    -210.0,
+    2.0
+   ],
+   "how": "jump"
+  },
+  {
+   "id": "his:b-high-wall",
+   "kind": "jump",
+   "side": "CT",
+   "zone": "B Site",
+   "from": [
+    1260.0,
+    -224.0,
+    -46.0
+   ],
+   "to": [
+    1434.0,
+    -210.0,
+    2.0
+   ],
+   "how": "jump"
+  },
+  {
+   "id": "his:window",
+   "kind": "silent",
+   "side": "T",
+   "zone": "Window",
+   "from": [
+    37.0,
+    118.0,
+    64.0
+   ],
+   "to": [
+    73.0,
+    -49.0,
+    130.0
+   ],
+   "how": "walk"
+  },
+  {
+   "id": "his:antipush",
+   "kind": "boost",
+   "side": "CT",
+   "zone": "Top Mid",
+   "from": [
+    356.0,
+    888.0,
+    -2.0
+   ],
+   "to": [
+    515.0,
+    940.0,
+    14.0
+   ],
+   "how": "jump"
+  },
+  {
+   "id": "his:antipush-bis",
+   "kind": "jump",
+   "side": "CT",
+   "zone": "Top Mid",
+   "from": [
+    508.8,
+    946.5,
+    13.9
+   ],
+   "to": [
+    409.0,
+    1128.3,
+    56.0
+   ],
+   "how": "jump"
+  },
+  {
+   "id": "his:long-crate",
+   "kind": "boost",
+   "side": "T",
+   "zone": "Outside Long",
+   "from": [
+    -837.0,
+    52.0,
+    96.0
+   ],
+   "to": [
+    -1078.0,
+    50.0,
+    95.0
+   ],
+   "how": "run"
+  },
+  {
+   "id": "his:long-corridor",
+   "kind": "silent",
+   "side": "CT",
+   "zone": "Long A",
+   "from": [
+    -1152.0,
+    -1647.0,
+    -13.0
+   ],
+   "to": [
+    -1267.0,
+    -1553.0,
+    7.0
+   ],
+   "how": "walk"
+  },
+  {
+   "id": "his:b-high-point",
+   "kind": "jump",
+   "side": "CT",
+   "zone": "B Site",
+   "from": [
+    1028.0,
+    -615.0,
+    8.0
+   ],
+   "to": [
+    1187.0,
+    -756.0,
+    26.0
+   ],
+   "how": "jump"
+  }
+ ]
+}

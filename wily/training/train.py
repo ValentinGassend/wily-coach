@@ -26,6 +26,7 @@ import pandas as pd
 from wily.core import config
 from wily.training import crossfire
 from wily.training import momentum
+from wily.training import execs
 from wily.core import i18n   # i18n.tr: train.py's own tr is a rifle
 from wily.training import replay
 
@@ -101,7 +102,11 @@ WARMUP_MIN = 5
 # défense de bombsite only"): one module for the whole time, on one map
 # 14/10, Momentum (rework_entrainement.md, section 9: "a dedicated movement training mode"): moving on the real maps,
 # a focus block of its own, not in the full session until the training level shares its time out
-FOCUS = ("crossfire", "defend", "push", "nade", "wallbang", "situation", "momentum")
+# the parts put aside for this release (28/10, the user: "cette partie-là, on peut la mettre de côté pour la prochaine
+# release, la cacher à tous les utilisateurs": Momentum, till his own jumps are recorded): out of the modules offered and of
+# the sessions; COACH_SHOW_HIDDEN=1 (a lab of his) brings them back
+HIDDEN = () if os.environ.get("COACH_SHOW_HIDDEN") else ("momentum",)
+FOCUS = tuple(k for k in ("crossfire", "defend", "push", "nade", "wallbang", "situation", "momentum") if k not in HIDDEN)
 FOCUS_REPEAT = 3   # a focus block plays each drill three times at most
 EST = {"defend": 110, "push": 75, "aim": 85, "nade": 40, "situation": 45, "wallbang": 60, "momentum": 65}   # seconds a drill takes, about (with a retry)
 RIFLE = {2: "weapon_ak47", 3: "weapon_m4a1"}
@@ -191,18 +196,38 @@ def _pick(cands, n, items, nsess, key=lambda c: c["id"], weight=lambda c: 1.0):
 
 # ---------------------------------------------------------------- the drills of a map
 
+_MY = {}
+
+
 def _my_matches(sid, mp=None):
+    """Your matches with a demo: [(match, map)]. Their maps from the ledger of the base's matches, the list kept while
+    your matches folder is the same, a minute at most (22/10: Prepare's first answer opened your 124 meta.json four
+    times a map on the hard disk)."""
     md = os.path.join(config.player_dir(sid), "matches")
-    out = []
-    for mid in os.listdir(md) if os.path.isdir(md) else []:
-        deep = os.path.join(config.OUT, "deep", mid)
+    try:
+        names = tuple(sorted(os.listdir(md))) if os.path.isdir(md) else ()
+    except OSError:
+        names = ()
+    hit = _MY.get(str(sid))
+    if not hit or hit[1] != names or time.time() - hit[0] > 60:
         try:
-            m = json.load(open(os.path.join(deep, "meta.json"), encoding="utf-8"))["map"]
-        except (OSError, ValueError, KeyError):
-            continue
-        if os.path.exists(os.path.join(deep, "duels.parquet")) and (mp is None or m == mp):
-            out.append((mid, m))
-    return out
+            from wily.core import ledger
+            facts = ledger.match_facts()
+        except Exception:
+            facts = {}
+        allm = []
+        for mid in names:
+            deep = os.path.join(config.OUT, "deep", mid)
+            m = (facts.get(mid) or {}).get("map")
+            if not m:
+                try:
+                    m = json.load(open(os.path.join(deep, "meta.json"), encoding="utf-8"))["map"]
+                except (OSError, ValueError, KeyError):
+                    continue
+            if os.path.exists(os.path.join(deep, "duels.parquet")):
+                allm.append((mid, m))
+        hit = _MY[str(sid)] = (time.time(), names, allm)
+    return [x for x in hit[2] if mp is None or x[1] == mp]
 
 
 def maps(sid):
@@ -371,12 +396,18 @@ def aim_range_drills(sid, secs):
 # a prefire's angles by the bots' level (06/10, the user: "en expert les bots vraiment partout, en normal le maximum
 # mais un peu moins, en simple vraiment beaucoup moins: les positions les plus fortes, les plus jouées")
 PREFIRE_N = {0: 4, 1: 7, 2: 9, 3: 10}
+# its CTs that react as the base's do (23/10, the user: "quelques CT qui réagissent comme ceux de la base"): none at Easy,
+# then one, two, three of them, never the first one met (it would teach nothing), drawn anew each time
+PREFIRE_REACT = {0: 0, 1: 1, 2: 2, 3: 3}
 
 
 def _by_level(d, difficulty):
     b = d["bots"][:PREFIRE_N.get(int(difficulty), 9)]   # the most played first
     m = min((x.get("at", 0) for x in b), default=0)
     d["bots"] = [dict(x, at=round(x.get("at", 0) - m, 1)) for x in b]
+    later = [x for x in d["bots"] if x.get("seq", 0) >= 1]
+    for x in random.sample(later, min(len(later), PREFIRE_REACT.get(int(difficulty), 2))):
+        x["react"] = True
     return d
 
 
@@ -563,6 +594,21 @@ def _first_seen(h, P, r=160.0, dz=110.0):
     return int(np.argmax(m)) if m.any() else -1
 
 
+def _seen_before_site(h, path, site, r=300.0, grace=96):
+    """A post's attacker in the post's sight before it has stood 3 s on the bombsite (03/11, round 20, Fachwerk's A AWP:
+    8 kills, no death, 2 waves of 6 lost, the site taken 10 s in by attackers the post never saw; the plugin's rule: 4 s on
+    the site's box unseen takes it): its first frame in the post's sight (_first_seen) comes before its grace-th frame
+    within r of the plant zone (32 frames a second)."""
+    P = np.asarray(path, float).reshape(-1, 5)
+    k = _first_seen(h, P)
+    if k < 0:
+        return False
+    if site is None:
+        return True
+    near = (np.hypot(P[:k, 0] - site[0], P[:k, 1] - site[1]) < r) & (np.abs(P[:k, 2] - site[2]) < 160)
+    return int(near.sum()) < grace
+
+
 def _hold_zone(CP, zones, p, mp):
     """A hold's place name: the most common zone of the CTs who fought from there (Backsite, Heaven…)."""
     near = np.hypot(CP[:, 0] - p[0], CP[:, 1] - p[1]) < 110
@@ -597,6 +643,168 @@ def _zone_samples(mp, max_matches=60):
     _ZS.clear()
     _ZS[mp] = (time.time(), df)
     return df
+
+
+WALLS_D = os.path.join(config.OUT, "train_walls")
+_GRID = {}
+
+
+def _occupancy(mp):
+    """Where the base's players stood on that map, as cells of 8 u (x, y) and 16 u (z): made once from its samples
+    (_zone_samples: 60 matches read from the hard disk, a minute cold), kept in out/train_walls, made again when the
+    map has a quarter more matches (20/10: Prepare's site takes waited 213 s, every spot reading them again)."""
+    if mp in _GRID:
+        return _GRID[mp]
+    os.makedirs(WALLS_D, exist_ok=True)
+    f, meta = os.path.join(WALLS_D, f"{mp}.npy"), os.path.join(WALLS_D, f"{mp}.json")
+    n = len(_map_dirs(mp))
+    G = None
+    try:
+        if (config.read_json(meta, {}) or {}).get("n", 0) >= 0.8 * n:
+            G = np.load(f)
+    except (OSError, ValueError):
+        G = None
+    if G is None:
+        S = _zone_samples(mp)
+        G = np.unique(np.stack([np.round(S.X.to_numpy() / 8), np.round(S.Y.to_numpy() / 8), np.round(S.Z.to_numpy() / 16)], 1).astype(np.int32), axis=0)
+        np.save(f, G)
+        config.write_json(meta, {"n": n, "cells": int(len(G))})
+    _GRID[mp] = G
+    return G
+
+
+def spot_walls(mp, p, r=40.0, dz=40.0):
+    """Whether a stuff spot is one you find again (19/10, his 21:19 video: "on retient un stuff en identifiant une zone
+    depuis laquelle l'envoyer ... un angle, le long d'un mur", "en plein milieu de l'allée ce ne sont pas des endroits
+    dans lesquels on peut envoyer un stuff"; 20/10, a flash from an open square: "cette flash est envoyée de nulle
+    part"): where the base's players stood around it, in 16 directions; one nobody stood in between 8 and r u is a wall.
+    -> {dirs: 16 bools (east first, counterclockwise), walls: the blocked ones, ok: a wall along it (3 in a row), n}"""
+    G = _occupancy(mp)
+    X, Y, Z = G[:, 0] * 8.0, G[:, 1] * 8.0, G[:, 2] * 16.0
+    m = (np.abs(X - p[0]) < r) & (np.abs(Y - p[1]) < r) & (np.abs(Z - p[2]) < dz)
+    dx, dy = X[m] - p[0], Y[m] - p[1]
+    d = np.hypot(dx, dy)
+    k = ((np.degrees(np.arctan2(dy, dx)) % 360) // 22.5).astype(int)[(d > 8) & (d < r)]
+    dirs = [not bool((k == i).any()) for i in range(16)]
+    run = max((sum(1 for j in range(16) if all(dirs[(i + t) % 16] for t in range(j + 1))) for i in range(16)), default=0)
+    return {"dirs": dirs, "walls": sum(dirs), "ok": run >= 3 and sum(dirs) < 16, "n": int(m.sum())}
+
+
+TAKES_F = os.path.join(config.OUT, "train_takes.json")
+
+
+def take_spots(mp, site):
+    """Where the CTs are when the Ts take a site (20/10, his video: "croiser les endroits où je t'envoie des grenades avec
+    les positions fortes que tu as dans les datas ... trouver les endroits où sont les joueurs défensifs et quand les
+    joueurs sont offensifs, créer un premier contact sur les bombes sites"): in each round of the base whose duels reach
+    the site (a T in its zone or 500 u of its centre), the CTs of its duels from 2 s before that first contact to 12 s
+    after, 900 u of the centre and on its floor; merged 110 u apart, the most met first. -> [{pos, n, first, crouch,
+    zone}]. Cached per map, made again with a quarter more matches."""
+    cache = config.read_json(TAKES_F, {}) or {}
+    dirs = _map_dirs(mp)
+    key = f"{mp}|{site}"
+    if key in cache and cache[key].get("n", 0) >= 0.8 * len(dirs):
+        return cache[key]["spots"]
+    S = (site_data(mp).get("sites") or {}).get(f"Bombsite{site}")
+    if not S or not S.get("center"):
+        return []
+    c, zone = S["center"], f"Bombsite{site}"
+    cols = ["round", "t", "killer_side", "victim_side", "killer_zone", "victim_zone", "killer_X", "killer_Y", "killer_Z",
+            "victim_X", "victim_Y", "victim_Z", "killer_crouch", "victim_crouch"]
+    pts = []
+    for d in dirs:
+        try:
+            D = pd.read_parquet(os.path.join(config.OUT, "deep", d, "duels.parquet"), columns=cols)
+        except Exception:
+            continue
+        for _, g in D.groupby("round"):
+            g = g.sort_values("t")
+            tk = g.killer_side.to_numpy() == "T"
+            tx = np.where(tk, g.killer_X, g.victim_X)
+            ty = np.where(tk, g.killer_Y, g.victim_Y)
+            tz = np.where(tk, g.killer_zone, g.victim_zone)
+            on = (tz == zone) | (np.hypot(tx - c[0], ty - c[1]) < 500)
+            if not on.any():
+                continue
+            t1 = g.t.to_numpy()[on.argmax()]
+            w = g[(g.t >= t1 - 2) & (g.t <= t1 + 12)]
+            ck = w.killer_side.to_numpy() == "CT"
+            for x, y, z, cr, zn, t in zip(np.where(ck, w.killer_X, w.victim_X), np.where(ck, w.killer_Y, w.victim_Y),
+                                          np.where(ck, w.killer_Z, w.victim_Z), np.where(ck, w.killer_crouch, w.victim_crouch),
+                                          np.where(ck, w.killer_zone, w.victim_zone), w.t):
+                if math.dist((x, y), c[:2]) <= 900 and abs(z - c[2]) < 250:
+                    pts.append(((float(x), float(y), float(z)), bool(cr), str(zn), t == t1))
+    cl = []
+    for p, cr, zn, first in pts:
+        for q in cl:
+            if math.dist(q["c"][:2], p[:2]) < 110 and abs(q["c"][2] - p[2]) < 60:
+                q["s"] = [a + b for a, b in zip(q["s"], p)]
+                q["n"] += 1
+                q["crouch"] += cr
+                q["first"] += first
+                q["zones"][zn] = q["zones"].get(zn, 0) + 1
+                q["c"] = [v / q["n"] for v in q["s"]]
+                break
+        else:
+            cl.append({"c": list(p), "s": list(p), "n": 1, "crouch": int(cr), "first": int(first), "zones": {zn: 1}})
+    cl.sort(key=lambda q: -q["n"])
+    spots = [{"pos": [round(float(v), 1) for v in q["c"]], "n": int(q["n"]), "first": int(q["first"]), "crouch": int(q["crouch"]),
+              "zone": max(q["zones"], key=q["zones"].get)} for q in cl if q["n"] >= 5]
+    cache[key] = {"n": len(dirs), "spots": spots}
+    try:
+        config.write_json(TAKES_F, cache)
+    except OSError:
+        pass
+    return spots
+
+
+def start_near(mp, p, yaw=0.0, prefer=None, lo=150.0, hi=260.0):
+    """Where a step-by-step stuff drill puts you (20/10, his video: "je ne dois pas apparaître déjà au bon endroit, je dois
+    me déplacer, je dois être juste à proximité"): a place the base's players stood on, 150 to 260 u from the spot, same
+    floor, from which you walk to it in a straight line (players stood all along it); the nearest to where you come from
+    (the last grenade's spot), else behind you as you throw. None: no such place."""
+    G = _occupancy(mp)
+    X, Y, Z = G[:, 0] * 8.0, G[:, 1] * 8.0, G[:, 2] * 16.0
+    near = (np.abs(X - p[0]) < hi + 16) & (np.abs(Y - p[1]) < hi + 16) & (np.abs(Z - p[2]) < 48)
+    X, Y, Z = X[near], Y[near], Z[near]
+    if not len(X):
+        return None
+    d = np.hypot(X - p[0], Y - p[1])
+    cand = np.flatnonzero((d >= lo) & (d <= hi) & (np.abs(Z - p[2]) < 24))
+    if not len(cand):
+        return None
+    cells = set(zip(np.round(X / 8).astype(int), np.round(Y / 8).astype(int)))
+
+    def walkable(i):
+        n = int(d[i] // 8)
+        miss = 0
+        for k in range(1, n):
+            x = p[0] + (X[i] - p[0]) * k / n
+            y = p[1] + (Y[i] - p[1]) * k / n
+            cx, cy = round(x / 8), round(y / 8)
+            if not any((cx + a, cy + b) in cells for a in (-1, 0, 1) for b in (-1, 0, 1)):
+                miss += 1
+                if miss > 1:
+                    return False
+        return True
+
+    if prefer is not None and math.dist(prefer[:2], p[:2]) > lo:
+        score = np.hypot(X[cand] - prefer[0], Y[cand] - prefer[1])
+    else:   # behind you as you throw
+        back = math.radians(yaw + 180.0)
+        h = np.arctan2(Y[cand] - p[1], X[cand] - p[0])
+        score = np.abs(np.angle(np.exp(1j * (h - back))))
+    from wily.training import navmesh
+    for j in np.argsort(score)[:400]:
+        i = int(cand[j])
+        if walkable(i):
+            q = [round(float(X[i]), 1), round(float(Y[i]), 1), round(float(p[2] if abs(Z[i] - p[2]) < 16 else Z[i]) + 8.0, 1)]
+            # in the open, 16 u from any wall or prop (22/10, his test video: "je spawn en endroits où je suis bloqué": a
+            # place players stood by an IBC tank put him inside it)
+            if navmesh.on_mesh(mp, q) is False or (navmesh.walls(mp, q, r=16.0) or []):
+                continue
+            return q
+    return None
 
 
 def zone_outline(mp, name, near, cell=32.0, max_matches=60, R=1600.0, ZR=170.0, hold=650.0):
@@ -780,7 +988,7 @@ def _entries(mp, demos=24):
     dirs = []
     for d in sorted(os.listdir(os.path.join(config.OUT, "deep")), reverse=True):
         try:
-            if json.load(open(os.path.join(config.OUT, "deep", d, "meta.json"), encoding="utf-8")).get("map") == mp                     and os.path.exists(os.path.join(config.CACHE, f"{d}.dem")):
+            if json.load(open(os.path.join(config.OUT, "deep", d, "meta.json"), encoding="utf-8")).get("map") == mp                     and config.has_demo(d):
                 dirs.append(d)
         except (OSError, ValueError):
             continue
@@ -792,7 +1000,7 @@ def _entries(mp, demos=24):
             if not len(R):
                 continue
             want = sorted({t for pt in R.plant_tick for t in range(int(pt) - 14 * 64, int(pt) + 1, 2)})
-            dp = DemoParser(os.path.join(config.CACHE, f"{d}.dem"))
+            dp = DemoParser(config.demo(d))
             T = dp.parse_ticks(["X", "Y", "Z", "yaw", "pitch", "is_alive", "team_num", "last_place_name", "spotted"], ticks=want)
             thrown = _hit_nades(dp, want)
         except Exception as e:
@@ -901,8 +1109,8 @@ def _ground_line(P, mp=None):
     line hung in the air and zigzagged where the real player jumped on the boxes)."""
     Q = np.array(P[:, :3], float)
     Q[:, 2] = _opening(Q[:, 2])
-    if len(Q) > 20:   # the strafes and quick peeks smoothed out (±0.25 s): the way, not the steps (04/10: "the zigzag is bad")
-        k = 8
+    if len(Q) > 20:   # the strafes and quick peeks smoothed out (±0.125 s): the way, not the steps (04/10: "the zigzag is bad");
+        k = 4         # ±0.25 s cut the corners through the walls (09/10, his video: "le path dessiné au sol ne suit pas exactement la map")
         pad = np.pad(Q[:, :2], ((k, k), (0, 0)), mode="edge")
         sm = np.stack([np.convolve(pad[:, j], np.ones(2 * k + 1) / (2 * k + 1), mode="valid") for j in range(2)], 1)
         sm[0], sm[-1] = Q[0, :2], Q[-1, :2]
@@ -910,7 +1118,7 @@ def _ground_line(P, mp=None):
     for x0, x1, y0, y1, zmin, surf in WATER.get(mp, ()):   # in the water: on its surface, not under it (06/10, Anubis)
         w = (Q[:, 0] > x0) & (Q[:, 0] < x1) & (Q[:, 1] > y0) & (Q[:, 1] < y1) & (Q[:, 2] < surf)
         Q[w, 2] = surf
-    eps, keep = 24.0, _rdp(Q, 24.0)   # 06/10: closer to the way walked (48 u cut the corners)
+    eps, keep = 16.0, _rdp(Q, 16.0)   # 06/10: closer to the way walked (48 u cut the corners; 24 still did, 09/10)
     while len(keep) > 81:
         eps *= 1.5
         keep = _rdp(Q, eps)
@@ -988,7 +1196,37 @@ def _prefire_boost(mp, S, P, line):
     return None
 
 
-def practice_drills(sid, mp):
+# the posts a defense's weapon is played on (23/10, the user: "une arme qui colle au poste : MAG-7 sur un coin proche, AWP
+# sur une longue ligne"): how far its foes stood from it, the median of its duels (u); a rifle and a pistol anywhere
+KIT_REACH = {"close": (0.0, 750.0), "awp": (1100.0, 1e9)}
+# a shotgun's post a close corner itself (24/10, the real-client battery: MAG-7 posts with their foes at 669 to 728 u, Nuke's
+# Vending, Cache's Checkers, Mirage's B site, lost 1 kill for 6 deaths; an SMG holds those)
+SHOTGUNS, SHOTGUN_REACH = ("MAG-7", "XM1014", "Nova", "Sawed-Off"), 450.0
+# a shotgun's post only where a corner of its zone sees the attackers' ways within this (03/11, round 19: passed at 307 u
+# and under, Nuke's A and B; failed every time from 345 u, five maps; round 20 with 310: Overpass's Construction (301 u)
+# and Mirage's A (291 and 303 u) 1 wave of 6, 5 deaths each, Nuke's 275 u had held 5 of 6): tools/close_check.py,
+# resources/close_checked.json
+CLOSE_CAP = 280.0
+
+
+def _close_ok(mp, post):
+    """A shotgun's post as tools/close_check.py found it: True when its corners keep the ways within CLOSE_CAP, or when
+    it was never checked (offered till it is)."""
+    rec = (config.read_json(os.path.join(config.HERE, "resources", "close_checked.json"), {}) or {}).get(
+        f"{mp}|{round(post['pos'][0])}|{round(post['pos'][1])}|{round(post['pos'][2])}")
+    return rec is None or (rec.get("reach") is not None and rec["reach"] <= CLOSE_CAP)
+
+
+def _defend_format(kit, difficulty):
+    """A defense's attackers at a time and its frags asked, at your level (23/10, the user: "au niveau Facile, la Défense
+    du site A de Dust2 est déjà très dure en solo. Le niveau devrait dépendre du format (solo contre 3) autant que des
+    bots"): one at Easy, two at Normal, the weapon's own at Hard, one more at Expert; the frags asked in proportion."""
+    base = int(kit["alive"])
+    alive = min(base + 1, {0: 1, 1: 2, 2: base}.get(int(difficulty), base + 1))
+    return alive, max(3, round(kit["goal"] * (0.6 + 0.4 * alive / base)))
+
+
+def practice_drills(sid, mp, difficulty=2):
     """Prefire (you T from an entrance, bots on every angle the CTs really hold, they don't shoot: clear them fast) and
     defense (you CT on the site, attackers keep coming from the real entrances for 90 s: as many frags as you can)."""
     out = []
@@ -1081,37 +1319,57 @@ def practice_drills(sid, mp):
         # then that one, then free"): the most held of the site, each its own place, and only one the real hits come
         # into sight of (06/10: "les bots n'attaquent pas le mid, je peux rester à rien faire"); each post gets its own
         # attackers, real hits that walk into its sight from out of it
-        posts, tracks = [], []
+        site_pt = _plant_spot(mp, letter, S) or S["defend"]   # the plant zone (the plugin's "site taken" is on its box)
+        cands = []   # the posts that could be held, 4 at most, each with its own attackers and how far its foes stood
         for h in _site_holds(S):
-            if not h.get("zone") or any(h["zone"] == q["zone"] or math.dist(h["pos"], q["pos"]) <= 300 for q in posts):
+            if not h.get("zone") or any(h["zone"] == q[0]["zone"] or math.dist(h["pos"], q[0]["pos"]) <= 300 for q in cands):
                 continue
             mine = [t for t in hits if _sees(h, np.array(t["path"], float).reshape(-1, 5), r=180) >= 2]
-            tr = _defense_tracks(mine, h["pos"], n=10, foes=h) if len(mine) >= 3 else []
+            poly = zone_outline(mp, h["zone"], h["pos"])
+            tr = _defense_tracks(mine, h["pos"], n=10, foes=h, mp=mp, poly=poly) if len(mine) >= 3 else []
+            # the post sees them before they hold the site (03/11): no wave lost to attackers it could never see
+            tr = [t for t in tr if _seen_before_site(h, t["path"], site_pt)]
             if len(tr) < 3:   # too few walk into its sight from out of it
                 continue
-            k = len(posts)
             Q = np.array(h["seen"], float).reshape(-1, 3)   # turned to where its foes stood
             ang = _angle([h["pos"][0], h["pos"][1], h["pos"][2] + 64], np.median(Q, axis=0) + [0, 0, 56]) if len(Q) else h["ang"]
-            posts.append({"pos": h["pos"], "ang": ang, "zone": _post_name(mp, h, letter), "poly": zone_outline(mp, h["zone"], h["pos"]), "t": h.get("t")})
-            tracks += [dict(t, post=k) for t in tr]
-            if len(posts) >= 2:
+            reach = float(np.median(np.hypot(Q[:, 0] - h["pos"][0], Q[:, 1] - h["pos"][1]))) if len(Q) else 900.0
+            cands.append(({"pos": h["pos"], "ang": ang, "zone": _post_name(mp, h, letter), "poly": poly, "t": h.get("t")}, tr, reach))
+            if len(cands) >= 4:
                 break
-        tracks += [dict(t, post=-1) for t in _defense_tracks(hits, S["defend"], n=12)]   # then free: any of them
-        if len(spawns) < 2 and not tracks:
+        free_tr = [dict(t, post=-1) for t in _defense_tracks(hits, S["defend"], n=12, mp=mp)]   # then free: any of them
+        if len(spawns) < 2 and not cands and not free_tr:
             continue
-        ways = Counter(t["zone"] for t in tracks)
-        froms = ", ".join(f"{w} {round(100 * n / len(tracks))}%" for w, n in ways.most_common(4)) if tracks else \
-            ", ".join(dict.fromkeys(replay_zone(e["zone"], mp) for e in S["entrances"]))
-        hold_t = [p["t"] for p in posts if p.get("t") is not None]
-        site_at = _plant_spot(mp, letter, S) or S["defend"]   # free: you back on the plant zone itself
+        site_at = site_pt   # free: you back on the plant zone itself
         for kit in _defense_kits(sid):
+            lo, hi = KIT_REACH.get(kit["cls"], (0.0, 1e9))
+            if kit["name"] in SHOTGUNS:
+                hi = min(hi, SHOTGUN_REACH)
+            fit = [c for c in cands if lo <= c[2] <= hi and (kit["name"] not in SHOTGUNS or _close_ok(mp, c[0]))][:2]
+            if kit["cls"] in KIT_REACH and not fit:   # no post of this site fits that weapon: not played here
+                continue
+            posts = [c[0] for c in fit]
+            # a shotgun plays its close corners only (24/10, the real-client battery on Ancient: its post at 419 u, then half
+            # the drill free on the site, its long duels lost 4 kills for 7 deaths): no free phase
+            free = kit["name"] not in SHOTGUNS
+            tracks = [dict(t, post=k) for k, c in enumerate(fit) for t in c[1]] + (free_tr if free else [])
+            if len(spawns) < 2 and not tracks:
+                continue
+            ways = Counter(t["zone"] for t in tracks)
+            froms = ", ".join(f"{w} {round(100 * n / len(tracks))}%" for w, n in ways.most_common(4)) if tracks else \
+                ", ".join(dict.fromkeys(replay_zone(e["zone"], mp) for e in S["entrances"]))
+            hold_t = [p["t"] for p in posts if p.get("t") is not None]
+            alive, goal = _defend_format(kit, difficulty)
             out.append({"id": f"defend:{mp}:{z}:{kit['cls']}", "kind": "aim", "mode": "defend", "map": mp,
                         "title": i18n.tr("DEFEND {site} · {kit}", site=site, kit=kit['name']), "team": 3,
-                        "tip": i18n.tr("{s} s · {n} at a time, the ways real hits come: {ways} · {goal} frags · you respawn", s=kit['seconds'], n=kit['alive'], ways=froms, goal=kit['goal']),
-                        "me": {"pos": site_at, "ang": _angle(site_at, spawns[0]["pos"] if spawns else tracks[0]["path"][:3])},
+                        "tip": i18n.tr("{s} s · {n} at a time, the ways real hits come: {ways} · {goal} frags · you respawn", s=kit['seconds'], n=alive, ways=froms, goal=goal),
+                        # a shotgun's drill (no free phase) starts on its post itself (24/10: from the site its first
+                        # attackers saw him in the countdown, went their own way and never came to the post)
+                        "me": {"pos": posts[0]["pos"], "ang": posts[0]["ang"]} if not free and posts else
+                              {"pos": site_at, "ang": _angle(site_at, spawns[0]["pos"] if spawns else tracks[0]["path"][:3])},
                         "weapons": kit["weapons"], "bot_weapons": kit["bot_weapons"], "armor": 100, "helmet": kit["helmet"],
-                        "bots": spawns, "tracks": tracks, "seconds": kit["seconds"], "alive": kit["alive"], "goal": kit["goal"],
-                        "posts": posts, "weight": kit["weight"],
+                        "bots": spawns, "tracks": tracks, "seconds": kit["seconds"], "alive": alive, "goal": goal,
+                        "posts": posts, "free": free, "weight": kit["weight"], "reach": [round(c[2]) for c in fit], "plant_at": site_at,
                         "clock": round(max(20.0, 115 - max(0.0, min(hold_t) - 6)), 1) if hold_t else 0})
     return out
 
@@ -1130,7 +1388,94 @@ def _post_name(mp, h, letter=""):
     return h["zone"]
 
 
-def _defense_tracks(hits, spot, n=24, foes=None):
+def _toward(mp, path, spot, short=32.0, speed=215.0, poly=None):
+    """A cut real hit walked on to the zone it attacks (27/10, the user: "les défenses de zone sont supposées rester dans
+    les zones ... le problème est le comportement des adversaires qui ne se dirigent pas vers la zone": their ways ended
+    by it, the bots then put away far off or left to the game's own roaming): from its last frame the mesh's way to the
+    spot, `short` u short of it, at a rifle's walk (32 frames a second, as the demo's), turned the way it goes (16:58, Nuke:
+    stopped 150 u short, the defender hidden in its zone, 18 waves taken off unseen: into the zone, to the post itself).
+    -> the path's frames with the walk added (as they were when there is no way)."""
+    from wily.training import navmesh
+    if not mp or len(path) < 10:
+        return path
+    last = path[-5:-2]
+    out = list(path)
+    if math.dist(last[:2], spot[:2]) > short + 40:
+        W = navmesh.route(mp, last, spot)
+        if len(W) < 2:
+            return path
+        out += _walk(W, speed, short)
+    # then it clears the zone (27/10 19:00, Vertigo B: at the post, the defender hidden in his zone, left to the game it
+    # walked off, 12 waves taken off unseen)
+    if poly and math.dist(out[-5:-3], spot[:2]) <= 150:
+        out += _zone_sweep(mp, out[-5:-2], poly, spot)
+    return out
+
+
+def _walk(W, speed, short=0.0):
+    """Frames along a mesh way (32 a second), turned the way it goes, `short` u short of its end."""
+    L = [0.0]
+    for a, b in zip(W, W[1:]):
+        L.append(L[-1] + math.dist(a[:2], b[:2]))
+    stop = L[-1] - short
+    out, s, k, step = [], speed / 32.0, 0, speed / 32.0
+    while s < stop:
+        while k + 1 < len(W) and L[k + 1] < s:
+            k += 1
+        if k + 1 >= len(W):
+            break
+        a, b = W[k], W[k + 1]
+        f = (s - L[k]) / max(1e-6, L[k + 1] - L[k])
+        x, y, z = a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f
+        out += [round(x, 1), round(y, 1), round(z, 1), round(math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])), 1), 0.0]
+        s += step
+    return out
+
+
+def _in_zone(poly, x, y):
+    inside, n = False, len(poly)
+    for i in range(n):
+        (x1, y1), (x2, y2) = poly[i][:2], poly[(i + 1) % n][:2]
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+            inside = not inside
+    return inside
+
+
+def _zone_sweep(mp, at, poly, spot, legs=3, speed=150.0, most=12.0, reach=420.0):
+    """An attacker come to the post clears the zone you hold (27/10, the user: "les adversaires ... ne se dirigent pas
+    vers la zone"; a zone defense is played moving inside it, the attackers looking for you there): from where its way
+    ended, at a walk, by `legs` of the zone's spots each the farthest from the ones it went by (its corners), on the
+    post's floor, `reach` u of the post at most (21:58, Nuke's Tunnels: a long corridor's far end, 1390 u from you), `most`
+    s at most; the plugin gives it to the game only when it sees you or is on you.
+    -> its frames ([] when the zone has no spot on the mesh)."""
+    from wily.training import navmesh
+    xs, ys = [q[0] for q in poly], [q[1] for q in poly]
+    grid = []
+    for x in np.arange(min(xs), max(xs) + 1, 48.0):
+        for y in np.arange(min(ys), max(ys) + 1, 48.0):
+            if _in_zone(poly, x, y):
+                q = navmesh.nearest(mp, [float(x), float(y), spot[2]], r=24.0, dz=48.0)
+                if q and abs(q[2] - spot[2]) < 48 and math.dist(q[:2], spot[:2]) <= reach:
+                    grid.append(q)
+    if len(grid) < 2:
+        return []
+    out, cur, went = [], list(at), [list(at)]
+    for _ in range(legs):
+        nxt = max(grid, key=lambda q: min(math.dist(q[:2], p[:2]) for p in went) + random.uniform(0, 60))
+        if math.dist(nxt[:2], cur[:2]) < 96:
+            break
+        W = navmesh.route(mp, cur, nxt)
+        if len(W) < 2:
+            continue
+        out += _walk(W, speed)
+        went.append(nxt)
+        cur = nxt
+        if len(out) >= most * 32 * 5:
+            return out[:int(most * 32) * 5]
+    return out
+
+
+def _defense_tracks(hits, spot, n=24, foes=None, mp=None, poly=None):
     """A defense's attackers: real hits on the site in their real proportions (the ways attackers really take: few by
     mid when few go by mid, 04/10), each one from 2 s before a CT first saw it in its match, so it walks in out of sight
     instead of appearing in front of you ("the spawn kill problem"), never closer than 700 u; with its grenades. For a
@@ -1162,7 +1507,13 @@ def _defense_tracks(hits, spot, n=24, foes=None):
             k -= 1
         if d[k] < far or end - k < 40:
             continue
-        cut.append({"zone": t["zone"], "path": t["path"][5 * k:5 * end],
+        # on the ground at its start: one cut in the middle of a jump put its bot in the air, in the stairs' ceiling the
+        # player cleared crouched (17/10, the self-test: Inferno's Apps, a bot caught there at each start)
+        air = P[:, 2] - _opening(P[:, 2]) > 6
+        steep = np.r_[np.abs(np.diff(P[:, 2])) > 2.5, False]   # a takeoff or a stair: its next frames climb or drop
+        while k < end - 40 and (air[k] or steep[k:k + 3].any()):
+            k += 1
+        cut.append({"zone": t["zone"], "path": _toward(mp, t["path"][5 * k:5 * end], spot, poly=poly),
                     "nades": [dict(nd, f=nd["f"] - k) for nd in t.get("nades") or [] if k <= nd["f"] < end]})
     by = {}
     for t in cut:
@@ -1203,10 +1554,10 @@ def _defense_kits(sid):
         if not best or (cls != "rifle" and sum(prim[x] for x in names) < max(5, 0.05 * n)):
             continue
         kits.append({"cls": cls, "name": best, "weapons": ["weapon_knife", side_arm, replay._item(best)], "helmet": True,
-                     "bot_weapons": ["weapon_knife", "weapon_glock", RIFLE[2]], "seconds": {"rifle": 120}.get(cls, 100),
+                     "bot_weapons": ["weapon_knife", "weapon_glock", RIFLE[2]], "seconds": {"rifle": 180}.get(cls, 150),   # 04/11, his order: more time, all 6 waves
                      "alive": 4 if cls == "rifle" else 3, "goal": {"rifle": 10, "close": 8, "awp": 7}[cls], "weight": 4 if cls == "rifle" else 3})
     kits.append({"cls": "pistol", "name": pistol, "weapons": ["weapon_knife", side_arm], "helmet": False,
-                 "bot_weapons": ["weapon_knife", "weapon_glock"], "seconds": 90, "alive": 3, "goal": 6, "weight": 3})
+                 "bot_weapons": ["weapon_knife", "weapon_glock"], "seconds": 135, "alive": 3, "goal": 6, "weight": 3})
     return kits
 
 
@@ -1225,19 +1576,66 @@ def _world(mp, px, py):
 _LANDS = {}
 
 
-def _land(mp, typ, pos):
+_RAW = {}
+
+
+def _findable_spot(mp, typ, side, frm, land, r=150.0):
+    """The same lineup thrown by the base from a spot you find again (20/10, his video on a flash from an open square:
+    "cette flash est envoyée de nulle part"; 19/10: "un angle, le long d'un mur"): of the base's throws of that kind and
+    side from that zone, standing still (or a jumpthrow from standing), that landed within r u of it (a flash: wherever it
+    popped above), the spot most of them stood on that has a wall by it (spot_walls): one of its throws, its aim and its
+    technique. None: no such throw."""
+    if mp not in _RAW:
+        try:
+            N = pd.read_parquet(os.path.join(config.OUT, "population", "nades.parquet"), filters=[("map", "==", mp)],
+                                columns=["type", "side", "zone", "X", "Y", "Z", "pitch", "yaw", "jump", "crouch", "speed", "land_X", "land_Y", "land_Z"])
+        except Exception:
+            N = None
+        if N is not None:   # its words as categories: compared 600 times a map (22/10: 10 s of Dust2's Prepare on them)
+            for c in ("type", "side", "zone"):
+                N[c] = N[c].astype("category")
+        _RAW[mp] = N   # each map's kept (20/10: one at a time, Prepare asking two maps read the table again and again)
+    N = _RAW[mp]
+    if N is None or not land:
+        return None
+    n = N[(N.type == typ) & (N.side == side) & (N.zone == frm) & (N.speed < 30) & N.land_X.notna()]
+    n = n[np.hypot(n.land_X - land[0], n.land_Y - land[1]) < r]
+    if typ != "flash" and len(land) >= 3:
+        n = n[(n.land_Z - land[2]).abs() < 120]
+    best = None
+    for _, g in n.groupby([(n.X / 24).round(), (n.Y / 24).round()]):
+        if len(g) < 2:
+            continue
+        c = [float(g.X.median()), float(g.Y.median()), float(g.Z.median())]
+        if (best is None or len(g) > best[0]) and spot_walls(mp, c)["ok"]:
+            best = (len(g), g, c)
+    if not best:
+        return None
+    g, c = best[1], best[2]
+    t = g.iloc[int(np.argmin(np.hypot(g.X.to_numpy() - c[0], g.Y.to_numpy() - c[1])))]
+    how = "jumpthrow" if bool(t.jump) else "crouching" if bool(t.crouch) else "standing still"
+    return [round(float(t.X), 1), round(float(t.Y), 1), round(float(t.Z), 1)], [round(float(t.pitch), 2), round(float(t.yaw), 2)], how
+
+
+def _land(mp, typ, pos, ang=None):
     """Where that very throw landed (the one whose spot and aim the drill gives), not the middle of its group: a
     bouncing molotov of the group can land 300 u from it (03/10). With its height when the demo it comes from is here
-    (its detonation point): x, y, z; else x, y."""
+    (its detonation point): x, y, z; else x, y. Matched on its aim too (17/10: the guided bot's misses, 70 throws of
+    the base from Anubis' Canal spot, each its own way: their middle was nobody's landing)."""
     if mp not in _LANDS:
         f = os.path.join(config.OUT, "population", "nades.parquet")
         cols = ["map", "match", "round", "type", "X", "Y", "land_px", "land_py"]
         try:
-            try:   # a player's copy: each throw's landing came with the base, its demo stays on the coach's PC (05/10)
-                N = pd.read_parquet(f, columns=cols + ["land_X", "land_Y", "land_Z"])
-            except Exception:
-                N = pd.read_parquet(f, columns=cols)
-            _LANDS[mp] = N[N["map"] == mp]
+            N = None
+            for more in (["pitch", "yaw", "land_X", "land_Y", "land_Z"], ["land_X", "land_Y", "land_Z"], []):
+                try:   # a player's copy: each throw's landing came with the base, its demo stays on the coach's PC (05/10)
+                    N = pd.read_parquet(f, columns=cols + more, filters=[("map", "==", mp)])
+                    break
+                except Exception:
+                    continue
+            N = N[N["map"] == mp].copy()
+            N["type"] = N["type"].astype("category")   # compared for each lineup (22/10: 4 s of Dust2's Prepare)
+            _LANDS[mp] = N
         except Exception:
             _LANDS[mp] = None
     N = _LANDS[mp]
@@ -1246,6 +1644,10 @@ def _land(mp, typ, pos):
     m = N[(N.type == typ) & ((N.X - pos[0]).abs() < 1) & ((N.Y - pos[1]).abs() < 1)]
     if not len(m):
         return None
+    if ang is not None and "pitch" in m:
+        aim = m[((m.pitch - ang[0]).abs() < 0.5) & (((m.yaw - ang[1] + 180) % 360 - 180).abs() < 0.5)]
+        if len(aim):
+            m = aim
     if "land_X" in m and m.land_X.notna().any():
         q = m[m.land_X.notna() & m.land_Z.notna()][["land_X", "land_Y", "land_Z"]].to_numpy(float)[:5]
         if len(q):
@@ -1274,10 +1676,23 @@ _MAPDIRS = {}
 
 def _map_dirs(mp):
     """The base's matches on a map. Kept 10 min in memory (06/10: a map's stuff drills asked 19 times, reading the
-    2,900 matches' meta.json each time: 54,000 files, 14 s before the warm-up could start)."""
+    2,900 matches' meta.json each time: 54,000 files, 14 s before the warm-up could start), from the ledger of the base's
+    matches (22/10, his test video: Prepare's first answer after the app started, 35 s, refreshed, "j'ai souvent une
+    erreur comme ça qui pète": 5,101 meta.json opened on the hard disk; the ledger reads only the new ones). A folder
+    still being written (.<id>.tmp) is no match yet."""
     hit = _MAPDIRS.get(mp)
     if hit and time.time() - hit[0] < 600:
         return hit[1]
+    try:
+        from wily.core import ledger
+        facts = ledger.match_facts()
+    except Exception as e:
+        print("map dirs: no ledger", e, flush=True)
+        facts = None
+    if facts is not None:
+        dirs = sorted(m for m, f in facts.items() if not m.startswith(".") and (f or {}).get("map") == mp)
+        _MAPDIRS[mp] = (time.time(), dirs)
+        return dirs
     dirs = []
     try:
         names = sorted(os.listdir(os.path.join(config.OUT, "deep")))
@@ -1338,7 +1753,136 @@ def _spots(mp):
     return out
 
 
-def _victims(mp, team, typ, land, me, side=None, t_med=None):
+VICTIMS_CHECKED = os.path.join(config.HERE, "resources", "victims_checked.json")
+_VCHK = {"t": 0, "v": {}}
+
+
+def victim_key(mp, typ, me, land):
+    return f"{mp}|{typ}|{round(me[0])}|{round(me[1])}|{round(land[0])}|{round(land[1])}"
+
+
+def _victims_checked(mp, typ, me, land, vs):
+    """The victims the guided bot found taking it (19/10, tools/victim_check.py: "vérifie bien avec tes bots que la POV de
+    la personne qui subit la flash subit vraiment la flash"): one it measured untouched left out; none left when it
+    measured them all untouched (no "from their side" rather than a wrong one)."""
+    if time.time() - _VCHK["t"] > 60:
+        _VCHK.update(t=time.time(), v=config.read_json(VICTIMS_CHECKED, {}) or {})
+    rec = _VCHK["v"].get(victim_key(mp, typ, me, land))
+    if not rec:
+        return vs
+    def miss(v):
+        return any(not c.get("hit") and math.dist(c["pos"][:2], v["pos"][:2]) < 24 for c in rec.get("victims") or [])
+    return [v for v in vs if not miss(v)]
+
+
+def _thrower_sees(mp, typ, me, land):
+    """A flash whose thrower sees it pop (19/10, his video: "je flash un endroit que je vois en ligne directe, donc si il y
+    a quelqu'un qui pique un peu plus tard, je me fais tuer"): tools/victim_check.py's guide blinded by it on the spot it
+    is thrown from, turned to where it pops."""
+    if typ != "flash":
+        return False
+    if time.time() - _VCHK["t"] > 60:
+        _VCHK.update(t=time.time(), v=config.read_json(VICTIMS_CHECKED, {}) or {})
+    rec = _VCHK["v"].get(victim_key(mp, typ, me, land)) or {}
+    return bool((rec.get("thrower") or {}).get("seen"))
+
+
+def zone_raw(mp, p):
+    """The demos' own place name where p is: the base's Ts' samples around it (64 u, else 128, else 256: a corner they
+    seldom stand in; its floor), the most common. None: no T ever near."""
+    E = _early(mp)
+    X, Y, Z = E.X.to_numpy(), E.Y.to_numpy(), E.Z.to_numpy()
+    for r in (64, 128, 256):
+        m = (np.abs(X - p[0]) < r) & (np.abs(Y - p[1]) < r) & (np.abs(Z - p[2]) < 80)
+        z = E.zone[m].astype(str)
+        z = z[z != "?"]
+        if len(z) >= 5:
+            return z.mode().iloc[0]
+    return None
+
+
+_WAYS = {}
+
+
+def way_zones(mp, zone, site):
+    """One way in to a site (22/10, the user on Dust2's exec A from Long: "la flash que tu envoies, elle part de short A,
+    pas de longue A ... je peux pas mettre les deux smokes longue A et le flash short A"): the zones the base's Ts go
+    through from that zone to the site (half of them at least) and the zone they come from into it (4 in 10 at least).
+    Dust2's Long Doors: Long, A Ramp, Outside Long; not Short Stairs (2 in 100)."""
+    k = (mp, zone, site)
+    if k in _WAYS:
+        return _WAYS[k]
+    E = _early(mp).sort_values(["d", "round", "sid", "t"])
+    z = E.zone.astype(str).to_numpy()
+    key = (E.d.to_numpy().astype(np.int64) * 100000 + E["round"].to_numpy().astype(np.int64) * 100) * 1000 + E.sid.cat.codes.to_numpy()
+    cuts = np.r_[0, np.nonzero(np.diff(key))[0] + 1, len(key)]
+    seen, before, n = Counter(), Counter(), 0
+    for a, b in zip(cuts[:-1], cuts[1:]):
+        t = z[a:b]
+        hit, end = np.nonzero(t == zone)[0], np.nonzero(t == site)[0]
+        if len(hit) and len(end) and hit[0] < end[-1]:
+            n += 1
+            seen.update(set(t[hit[0]:end[-1] + 1]))
+            prev = [x for x in t[:hit[0]] if x not in ("?", zone)]
+            if prev:
+                before[prev[-1]] += 1
+    out = {zone, site} | {x for x, c in seen.items() if n and c >= 0.5 * n} | {x for x, c in before.items() if n and c >= 0.4 * n}
+    _WAYS[k] = out
+    return out
+
+
+FIRE_R = 150.0   # a molotov's fire on the floor, about
+
+
+def molotov_blocks(mp, land, t_pop, foe="T", secs=7.0):
+    """The share of the base's Ts on their way by a molotov's fire (500 u of it, its floor) while it burns that go
+    through it, not round it: a fire they walk round blocks nothing (22/10, the user on Dust2's A defense: "les
+    terroristes qui pushent long peuvent contourner la molotov pour se rapprocher du car ... ma molotov ne sert à rien à
+    part m'exposer stuff en main pendant un timing"; 58 % of the Ts there went round it). -> (share, tracks) or (None, 0)."""
+    if foe != "T" or not land or len(land) < 3:
+        return None, 0
+    E = _early(mp)
+    W = E[(E.t >= t_pop) & (E.t <= t_pop + secs)]
+    d = np.hypot(W.X.to_numpy() - land[0], W.Y.to_numpy() - land[1])
+    W = W[(d < 500) & (np.abs(W.Z.to_numpy() - land[2]) < 120)]
+    if not len(W):
+        return None, 0
+    W = W.assign(dd=np.hypot(W.X.to_numpy() - land[0], W.Y.to_numpy() - land[1]))
+    m = W.groupby(["d", "round", "sid"], observed=True).dd.min()
+    m = m[m < 400]
+    if len(m) < 20:
+        return None, int(len(m))
+    return round(float((m < FIRE_R).mean()), 2), int(len(m))
+
+
+def _standable(mp, vs):
+    """Each victim where a player stands (22/10, his test video: "la personne qui cible le stuff est à moitié dans le
+    mur"): one off the map's mesh (the base's player in the air, on a prop's edge, against a wall) put on the nearest
+    floor a player stands on, 48 u of it at most; none there: left out. A map without a mesh: as they are."""
+    from wily.training import navmesh
+    out = []
+    for v in vs:
+        p = v.get("pos")
+        on = navmesh.on_mesh(mp, p) if p and len(p) >= 3 else None
+        if on is None or on:
+            out.append(v)
+            continue
+        q = navmesh.nearest(mp, p)
+        if q:
+            out.append(dict(v, pos=q))
+    return out
+
+
+def _victims(mp, team, typ, land, me, side=None, t_med=None, checked=True, see=None, avoid=None):
+    """The enemies a grenade is for (_victims_raw), each where a player stands (_standable); avoid: the places its own
+    exec already holds (exec_avoid)."""
+    v = _standable(mp, _victims_raw(mp, team, typ, land, me, side, t_med, checked, see, avoid))
+    # checked again where they now stand (24/10, the checks: Ancient's Alley molotov, its victim moved by _standable onto
+    # the very spot the guided bot had measured untouched); an entry drill has no landing
+    return _victims_checked(mp, typ, me, land, v) if checked and v and land else v
+
+
+def _victims_raw(mp, team, typ, land, me, side=None, t_med=None, checked=True, see=None, avoid=None):
     """The enemies a grenade is for, where the base's players really were when the same lineup landed (06/10, the user:
     "la personne qui subit le stuff doit être là où quelqu'un a pris des dégâts avec cette grenade": a Squeaky flash is
     for the Ts in Squeaky, not for a CT outside): the throws from that spot onto that place in the demos, the enemies in
@@ -1347,21 +1891,52 @@ def _victims(mp, team, typ, land, me, side=None, t_med=None):
     ones beyond it from where you throw); a molotov: in its fire, turned to where it came from."""
     if not land or len(land) < 3:
         return []
-    key = f"v3|{mp}|{typ}|{team}|{round(me[0])}|{round(me[1])}|{round(land[0])}|{round(land[1])}"
+    if see and typ == "smoke":   # a defense's smoke: the view onto its defender's post it cuts (21/10); a take's: onto its entry
+        # (or onto its own way in and the site's, both sides of it: 22/10, Dust2's Short smoke from Long, a list of views)
+        v = []
+        for s in (see if isinstance(see[0], (list, tuple)) else [see]):
+            v += [o for o in _defense_smoke_victims(mp, land, s, "T" if team == 3 else "CT") if all(math.dist(o["pos"], q["pos"]) >= 150 for q in v)]
+        return _victims_checked(mp, typ, me, land, v) if checked else v
+    key = (f"{'v12' if typ == 'flash' and team == 2 else 'v10'}|{mp}|{typ}|{team}|{round(me[0])}|{round(me[1])}|{round(land[0])}|{round(land[1])}"   # v10: a defender's flash; v12: a take's (holds, nearer its pop)
+           + (f"|{round(float(t_med))}" if t_med else "")   # for the Ts on their way then (22/10)
+           + "".join(f"|{t[0][0]}{round(q[0])},{round(q[1])}" for t, q in [(a[0], a[1]) for a in avoid or []] if typ == "flash"))
     try:
         VC = json.load(open(VICTIMS_F, encoding="utf-8"))
     except (OSError, ValueError):
         VC = {}
     hit = VC.get(key)
     if hit and time.time() - hit.get("t", 0) < 7 * 86400:   # a week: the base changes slowly
-        return hit["v"]
-    v = _victims_of(mp, team, typ, land, me)
+        return _victims_checked(mp, typ, me, land, hit["v"]) if checked else hit["v"]
+    v = _victims_of(mp, team, typ, land, me, t_med, avoid)
     VC[key] = {"t": time.time(), "v": v}
     try:
         config.write_json(VICTIMS_F, VC)
     except OSError:
         pass
-    return v
+    return _victims_checked(mp, typ, me, land, v) if checked else v
+
+
+def _defense_smoke_victims(mp, land, see, foe="T"):
+    """A site defense's smoke (21/10, resources/defenses.json: "cuts Heaven's view onto the site"): the Ts whose view of
+    the defender's post it is for, not the ones beyond it from where it is thrown (the guided bot found none of those
+    cut: they look at the site past it). The base's T duel spots met 8 times at least, 900 u of it at most (a smoke's
+    reach) on its floor, whose sight of the post passes through it (144 u of its middle, its radius), the most met first, 2 at most,
+    150 u apart; each turned to the post, "see" the post's eyes: the guided bot checks the smoke really cuts that line.
+    A take's smoke (foe "CT", 21/10, Dust2's cross smoke: thrown from Long Doors, nobody could see its thrower anyway):
+    the CTs whose view of where its entry crosses it cuts."""
+    eye = [see[0], see[1], see[2] + 64]
+    out = []
+    for x, y, z, n in sorted(_spots(mp).get(foe) or [], key=lambda h: -h[3]):
+        if n < 8 or math.hypot(x - land[0], y - land[1]) > 900 or abs(z - land[2]) > 100:   # its floor
+            continue
+        dx, dy = eye[0] - x, eye[1] - y
+        t = max(0.0, min(1.0, ((land[0] - x) * dx + (land[1] - y) * dy) / ((dx * dx + dy * dy) or 1.0)))
+        if math.hypot(x + t * dx - land[0], y + t * dy - land[1]) > 144 or any(math.dist([x, y, z], o["pos"]) < 150 for o in out):
+            continue
+        out.append({"pos": [round(x, 1), round(y, 1), round(z, 1)], "ang": _angle([x, y, z + 64], eye), "see": eye})
+        if len(out) >= 2:
+            break
+    return out
 
 
 VICTIMS_F = os.path.join(config.OUT, "train_victims.json")
@@ -1401,10 +1976,328 @@ def _real_line(mp, side, p, heads=()):
     return None
 
 
-def _victims_of(mp, team, typ, land, me):
+def _rotating(mp, land, foe):
+    """One of theirs on his way in where a smoke lands (20/10, his video: "il faudrait que la personne qui subisse le
+    stuff soit un peu en amont de cette smoke, comme si c'était un joueur qui rotate du A vers le B, et qui arriverait au
+    niveau du spawn CT"): the base's way of their side (Momentum's ways: a spawn or the other site to this one) passing
+    nearest it (400 u at most), 300 u before it, turned to it; "see": what it keeps him from seeing, that way 300 u on
+    past it (the way's end short of that: 300 u on past it the way he looks)."""
+    best = None
+    for w in (momentum.load(mp, build=False) or {}).get("routes") or []:
+        if w.get("side") != foe or len(w.get("line") or []) < 2:
+            continue
+        L = np.asarray([p[:3] for p in w["line"]], float)
+        d = np.hypot(L[:, 0] - land[0], L[:, 1] - land[1])
+        i = int(d.argmin())
+        if d[i] < 400 and (best is None or d[i] < best[0]):
+            best = (float(d[i]), L, i)
+    if not best:
+        return None
+    _, L, i = best
+    acc, j = 0.0, i
+    while j > 0 and acc < 300:
+        acc += float(np.hypot(L[j, 0] - L[j - 1, 0], L[j, 1] - L[j - 1, 1]))
+        j -= 1
+    p = L[j]
+    acc, k = 0.0, i
+    while k < len(L) - 1 and acc < 300:
+        acc += float(np.hypot(L[k + 1, 0] - L[k, 0], L[k + 1, 1] - L[k, 1]))
+        k += 1
+    if acc >= 150:
+        see = L[k]
+    else:
+        u = np.asarray(land[:2], float) - p[:2]
+        u = u / max(1.0, float(np.hypot(*u)))
+        see = np.array([land[0] + 300 * u[0], land[1] + 300 * u[1], land[2]], float)
+    return {"pos": [round(float(v), 1) for v in p], "ang": [0.0, round(math.degrees(math.atan2(land[1] - p[1], land[0] - p[0])), 1)],
+            "see": [round(float(v), 1) for v in see]}
+
+
+AIM_TOL_F = os.path.join(config.HERE, "resources", "aim_tolerance.json")
+_AT = {"t": 0.0, "v": {}}
+
+
+def aim_key(mp, typ, pos, ang):
+    """A lineup's key in resources/aim_tolerance.json: its map, kind, spot and aim."""
+    return f"{mp}|{typ}|{round(pos[0])}|{round(pos[1])}|{round(pos[2])}|{round(float(ang[0]), 1)}|{round(float(ang[1]), 1)}"
+
+
+def aim_tol(d):
+    """The yellow circle a lineup's throw allows, degrees (23/10, the user: "le rond de visée de 0,9° est trop large pour
+    les lancers sensibles au rebond", tools/aim_tolerance.py: how far its landing moves for a tenth of a degree); 0 when
+    not measured (the plugin's 0.9)."""
+    if time.time() - _AT["t"] > 60:
+        _AT.update(t=time.time(), v=config.read_json(AIM_TOL_F, {}) or {})
+    me = d.get("me") or {}
+    if not d.get("map") or not d.get("type") or len(me.get("pos") or []) < 3 or len(me.get("ang") or []) < 2:
+        return 0.0
+    rec = _AT["v"].get(aim_key(d["map"], d["type"], me["pos"], me["ang"]))
+    return float(rec["tol"]) if rec and rec.get("tol") else 0.0
+
+
+WEAPON_COLS = ["killer_side", "killer_X", "killer_Y", "killer_Z", "victim_X", "victim_Y", "weapon"]
+_WEAPONS = {}
+
+
+def duel_weapons(mp):
+    """The map's kills with the killer's spot and weapon (one copy kept, ledger.gathered): which guns a spot is played
+    with (23/10, the user: "varier les armes selon le spot (AWP sur les longues lignes ...)")."""
+    if mp not in _WEAPONS:
+        from wily.core import ledger
+        stamps = ledger.folders(config.DEEP)
+        items = [(d, os.path.join(config.DEEP, d, "duels.parquet"), stamps.get(d)) for d in _map_dirs(mp)]
+        try:
+            D = ledger.gathered(f"duel_weapons_{mp}", items, prep=lambda x, k: x.reindex(columns=WEAPON_COLS))
+        except Exception as e:
+            print("duel weapons", mp, e, flush=True)
+            D = pd.DataFrame(columns=WEAPON_COLS)
+        _WEAPONS[mp] = D.reindex(columns=WEAPON_COLS).dropna(subset=WEAPON_COLS[1:4])
+    return _WEAPONS[mp]
+
+
+def awp_share(mp, pos, side, r=120.0):
+    """The share of a spot's kills made with an AWP by its own side (killers within r, same floor), and how many."""
+    D = duel_weapons(mp)
+    m = (D.killer_side.to_numpy() == side) & (np.hypot(D.killer_X.to_numpy() - pos[0], D.killer_Y.to_numpy() - pos[1]) < r) \
+        & (np.abs(D.killer_Z.to_numpy() - pos[2]) < 90)
+    n = int(m.sum())
+    return (float((D.weapon.to_numpy()[m] == "awp").mean()) if n else 0.0), n
+
+
+APPROACH_F = os.path.join(config.OUT, "train_approach.json")
+
+
+def approach(mp, me, secs=7.0, r=64.0):
+    """The base's Ts' way up to a spot (23/10, the user: "montrer, pendant la vue du ciel, ton personnage qui avance sur le
+    chemin des T de la base jusqu'à son départ"): of their tracks that come within r of it on its floor, the one whose
+    last `secs` before it start nearest all of theirs (the most usual way in), a point every half second, the oldest
+    first; [] when none walked there. Kept in out/train_approach.json."""
+    key = f"{mp}|{round(me[0])}|{round(me[1])}|{round(me[2])}"
+    book = config.read_json(APPROACH_F, {}) or {}
+    if key in book:
+        return book[key]
+    E = _early(mp)
+    box = (np.abs(E.X.to_numpy() - me[0]) < 2200) & (np.abs(E.Y.to_numpy() - me[1]) < 2200)
+    W = E[box]
+    X, Y, Z, T = W.X.to_numpy(float), W.Y.to_numpy(float), W.Z.to_numpy(float), W.t.to_numpy(float)
+    K = W.d.to_numpy().astype(np.int64) * 100000 + W["round"].to_numpy().astype(np.int64) * 100 + W.sid.cat.codes.to_numpy().astype(np.int64) % 100
+    near = (np.hypot(X - me[0], Y - me[1]) < r) & (np.abs(Z - me[2]) < 80)
+    out = []
+    firsts = {}
+    for k, t in zip(K[near], T[near]):
+        if k not in firsts or t < firsts[k]:
+            firsts[k] = t
+    ways = []
+    for k, t in list(firsts.items())[:300]:
+        m = (K == k) & (T >= t - secs) & (T <= t)
+        o = np.argsort(T[m])
+        P = np.c_[X[m][o], Y[m][o], Z[m][o]]
+        if len(P) >= max(4, int(secs * 2) - 2) and np.hypot(*(P[-1, :2] - P[0, :2])) >= 300:
+            ways.append(P)
+    if ways:
+        S = np.array([w[0] for w in ways])
+        med = np.median(S, axis=0)
+        best = min(ways, key=lambda w: math.dist(w[0][:2], med[:2]))
+        out = [[round(float(v), 1) for v in p] for p in best[:-1]]
+    book[key] = out
+    config.write_json(APPROACH_F, book)
+    return out
+
+
+HOLD_COLS = ["t", "killer_side", "victim_side", "killer_X", "killer_Y", "killer_Z", "victim_X", "victim_Y", "victim_Z", "killer_speed"]
+_HOLDS = {}
+
+
+def _duel_sides(mp):
+    """The map's duels with their sides, the round's clock and the killer's speed (one copy kept, ledger.gathered: only
+    the new or changed matches read)."""
+    if mp not in _HOLDS:
+        from wily.core import ledger
+        stamps = ledger.folders(config.DEEP)
+        items = [(d, os.path.join(config.DEEP, d, "duels.parquet"), stamps.get(d)) for d in _map_dirs(mp)]
+        try:
+            D = ledger.gathered(f"duel_sides_{mp}", items, prep=lambda x, k: x.reindex(columns=HOLD_COLS))
+        except Exception as e:
+            print("duel sides", mp, e, flush=True)
+            D = pd.DataFrame(columns=HOLD_COLS)
+        _HOLDS[mp] = D.reindex(columns=HOLD_COLS).dropna(subset=HOLD_COLS[3:9])
+    return _HOLDS[mp]
+
+
+def exec_avoid(d, drills):
+    """The places its own exec already holds (22/10 eve, the user on Fachwerk's exec A flash 5: "si la personne est là,
+    elle subit déjà la molotov"): the smokes' and fires' landings of the drills of its clip, itself aside."""
+    def group(x):   # its clip, or its id less its rank (an exec's step drills lose their clip: execs.sequence)
+        return x.get("clip") or (str(x.get("id") or "").rsplit(":", 1)[0] if str(x.get("id") or "").count(":") >= 2 else None)
+    g = group(d)
+    if not g:
+        return []
+    return [(o["type"], o["target"]) for o in drills if o is not d and group(o) == g
+            and o.get("type") in ("smoke", "molotov") and o.get("target")]
+
+
+def _take_flash_holds(mp, land, me, n=2, avoid=None):
+    """A take's flash is for the CTs who hold the line its Ts come through by it (22/10 eve, the user on Fachwerk's exec
+    A: "ce qu'on cible avec la flash, c'est quelqu'un qui va tenir la ligne portail et qui va donc se faire flash, ce qui
+    permettra à l'allié de faire le kill ... des positions assez fortes, des positions qui permettent aux ennemis de faire
+    des kills aussi en temps normal ... et des positions où les ennemis peuvent avoir aussi des covers assez rapides"; its
+    first flash: "quelqu'un qui attend une personne qui décale juste avant le jump que tu fais pour aller sur le site A",
+    not the one at Long's end): the base's CT kills in the round's first minute of Ts within 300 u under its pop, the CTs'
+    spots (64 u) with two of them at least, not up the Ts' own way (its zones; the site's own kept), not running (median
+    150 u/s at most), a wall of the mesh within 64 u (a cover at hand), the most kills there, then overall less half its
+    deaths, 150 u apart; each turned to where its Ts died. [] when the base has none."""
+    from wily.training import navmesh
+    D = _duel_sides(mp)
+    if not len(D):
+        return []
+    lx, ly = land[0], land[1]
+    D = D[D.t <= 60]
+    K = D[(D.killer_side == "CT") & (D.victim_side == "T") & (np.hypot(D.victim_X - lx, D.victim_Y - ly) < 300)]
+    if len(K) < 2:
+        return []
+    sc = [(n_, S["center"]) for n_, S in (site_data(mp).get("sites") or {}).items() if S.get("center")]
+    site = min(sc, key=lambda x: math.dist(x[1][:2], [lx, ly]))[0] if sc else None
+    z0 = zone_raw(mp, me)
+    way = (way_zones(mp, z0, site) - {site}) if z0 and site else set()
+    N = navmesh.load(mp)
+    S = N["segs"] if N else np.zeros((0, 6))
+
+    def cover(p):
+        k = np.abs(S[:, 4] - p[2]) < 60
+        if not k.any():
+            return 1e9
+        A, B = S[k][:, 0:2], S[k][:, 2:4]
+        d = B - A
+        t = np.clip(((p[0] - A[:, 0]) * d[:, 0] + (p[1] - A[:, 1]) * d[:, 1]) / np.maximum((d * d).sum(1), 1e-9), 0, 1)
+        return float(np.hypot(A[:, 0] + t * d[:, 0] - p[0], A[:, 1] + t * d[:, 1] - p[1]).min())
+    K = K.assign(cx=(K.killer_X // 64).astype(int), cy=(K.killer_Y // 64).astype(int), cz=(K.killer_Z // 64).astype(int))
+    rows = []
+    for _, g in K.groupby(["cx", "cy", "cz"]):
+        if len(g) < 2 or float(g.killer_speed.median()) > 150:
+            continue
+        p = [float(g.killer_X.mean()), float(g.killer_Y.mean()), float(g.killer_Z.mean())]
+        if zone_raw(mp, p) in way or cover(p) > 64:
+            continue
+        # not in its exec's own fire or smoke: that one is gone already (or sees nothing)
+        if any((t == "molotov" and math.hypot(p[0] - q[0], p[1] - q[1]) < 230 and abs(p[2] - (q[2] if len(q) > 2 else p[2])) < 120)
+               or (t == "smoke" and math.hypot(p[0] - q[0], p[1] - q[1]) < 200) for t, q in avoid or []):
+            continue
+        near = lambda X, Y, Z: (np.hypot(X - p[0], Y - p[1]) < 48) & (np.abs(Z - p[2]) < 60)
+        kills = int((near(D.killer_X, D.killer_Y, D.killer_Z) & (D.killer_side == "CT")).sum())
+        deaths = int((near(D.victim_X, D.victim_Y, D.victim_Z) & (D.victim_side == "CT")).sum())
+        line = [float(g.victim_X.median()), float(g.victim_Y.median()), float(g.victim_Z.median())]
+        rows.append((len(g), kills - 0.5 * deaths, p, line))
+    out = []
+    # the strongest first (his "des positions qui permettent aux ennemis de faire des kills aussi en temps normal"): its
+    # kills less half its deaths, then its kills on that line; a second one only half as strong at least (his "un endroit
+    # où tu peux te trouver quand t'es en train de rota" came second)
+    rows.sort(key=lambda r: (-r[1], -r[0]))
+    for nk, sc_, p, line in rows:
+        if out and sc_ < 0.5 * rows[0][1]:
+            break
+        # a little nearer its pop, turned a little to it (22/10 eve, the user on flash 4: "légèrement déplacer la personne
+        # ... pour que la personne prenne la flash de façon un peu plus longtemps"): its spot within 48 u of the hold's
+        # middle nearest the pop (a wall still within 64 u), its view up to 15 degrees to the pop when it pops within 40
+        best = None
+        for r in (0, 24, 48):
+            for k in range(8 if r else 1):
+                a = 2 * math.pi * k / 8
+                q = navmesh.nearest(mp, [p[0] + r * math.cos(a), p[1] + r * math.sin(a), p[2]], r=24.0 if r else 40.0)
+                if q and cover(q) <= 64 and (best is None or math.dist(q, land) < math.dist(best, land)):
+                    best = q
+        q = [round(float(v), 1) for v in (best or p)]
+        if all(math.dist(q, o["pos"]) >= 150 for o in out):
+            ang = _angle([q[0], q[1], q[2] + 64], [line[0], line[1], line[2] + 64])
+            to_pop = math.degrees(math.atan2(land[1] - q[1], land[0] - q[0]))
+            dyaw = (to_pop - ang[1] + 540) % 360 - 180
+            if abs(dyaw) < 40:
+                ang = [ang[0], round(ang[1] + max(-15.0, min(15.0, dyaw)), 1)]
+            out.append({"pos": q, "ang": ang})
+        if len(out) >= n:
+            break
+    return out
+
+
+def _victims_of(mp, team, typ, land, me, t_med=None, avoid=None):
     lx, ly, lz = land[:3]
     reach = {"he": 350, "molotov": 220, "flash": 650, "smoke": 900}.get(typ, 500)
     foe = "CT" if team == 2 else "T"
+    # where their players defend, the most held first (20/10, his video: "mets-moi des spots où les joueurs défendent",
+    # "je suis dans le mur", "tu peux mettre la personne qui subit la flash plus loin derrière, il n'y a personne qui va
+    # regarder là en étant contact au mur", "il faut que le joueur soit derrière la charrette"): a molotov's in its fire,
+    # behind what it lands by (farther from you than its fire); a flash's under it, in front of it from you; a smoke's
+    # beyond it; an HE's around it. The base's players hurt by it there only when no held spot fits
+    look = [lx, ly, lz + (0 if typ == "flash" else 40)]
+    dl = math.hypot(lx - me[0], ly - me[1]) or 1.0
+    ax, ay = (lx - me[0]) / dl, (ly - me[1]) / dl
+    # a defender's flash: the Ts still on their way in, 250 u farther from the site than it pops at least (22/10, his
+    # test video on Dust2's A: "si tu mets la personne ciblée au car, c'est déjà trop tard, faut que la personne ciblée
+    # soit dans la longue")
+    sc = [S["center"] for S in (site_data(mp).get("sites") or {}).values() if S.get("center")]
+    sc = min(sc, key=lambda c: math.dist(c[:2], [lx, ly])) if sc else None
+    on_way = typ == "flash" and foe == "T" and sc is not None and math.dist(sc[:2], [lx, ly]) <= 900
+    def fits(x, y, z):
+        d, ahead = math.hypot(x - lx, y - ly), (x - lx) * ax + (y - ly) * ay
+        if typ == "molotov":   # its fire falls down what it lands on: the floor below too
+            return d <= 200 and -110 < z - lz < 40
+        if typ == "flash":
+            if on_way and math.dist(sc[:2], [x, y]) < math.dist(sc[:2], [lx, ly]) + 250:
+                return False
+            return d <= reach and -450 < z - lz < 100 and ahead >= -150
+        if typ == "smoke":
+            return d <= reach and abs(z - lz) < 200 and ahead >= 0.5 * d
+        return d <= reach and abs(z - lz) < 90
+    if on_way and t_med:   # the base's Ts where they are when it pops (thrown at its usual moment): on their way in
+        try:
+            E = _early(mp)
+            t_pop = float(t_med) + 1.5
+            W = E[(E.t >= t_pop - 1.0) & (E.t <= t_pop + 1.0)]
+            W = W[(np.hypot(W.X - lx, W.Y - ly) < reach) & ((W.Z - lz) > -450) & ((W.Z - lz) < 100)]
+            out = []
+            for (cx, cy), g in sorted(W.groupby([(W.X / 64).round(), (W.Y / 64).round()], observed=True), key=lambda kv: -len(kv[1])):
+                if len(g) < 20:
+                    break
+                p = [round(float(g.X.median()), 1), round(float(g.Y.median()), 1), round(float(g.Z.median()), 1)]
+                if fits(*p) and all(math.dist(p, o["pos"]) > 200 for o in out):
+                    out.append({"pos": p, "ang": _angle([p[0], p[1], p[2] + 64], look)})
+                if len(out) >= 2:
+                    break
+            if out:
+                return out
+        except Exception as e:
+            print("victims on their way", mp, e, flush=True)
+    held = [h for h in _spots(mp)[foe] if fits(*h[:3])]
+    if typ == "molotov":   # behind it first
+        held.sort(key=lambda h: (math.hypot(h[0] - me[0], h[1] - me[1]) < dl - 16, -h[3]))
+    out = []
+    if typ == "smoke":   # first one of theirs on his way in, rotating
+        r = _rotating(mp, land, foe)
+        if r:
+            out.append(r)
+    if typ == "flash" and foe == "CT":   # a take's flash: the CTs holding the line its Ts come through by it (22/10 eve)
+        hv = _take_flash_holds(mp, land, me, avoid=avoid)
+        if hv:
+            return hv
+    if typ == "flash" and foe == "CT":   # a site's flash: its defenders when the Ts take it first (20/10, his video: "cette
+        # flash elle n'est pas faite pour la personne qui l'a [subie], elle est faite pour la personne qui est sur le site
+        # A"): the base's CT spots of its takes in its reach (take_spots), the site's own place first, the most met first
+        for site, S in (site_data(mp).get("sites") or {}).items():
+            if not S.get("center") or math.dist(S["center"][:2], [lx, ly]) > 900:
+                continue
+            ts = [t for t in take_spots(mp, site[-1]) if fits(*t["pos"])]
+            own = f"Bombsite{site[-1]}"
+            for t in sorted(ts, key=lambda t: (t["zone"] != own, -t["n"])):
+                if all(math.dist(t["pos"], o["pos"]) > 200 for o in out):
+                    out.append({"pos": t["pos"], "ang": _real_line(mp, foe, t["pos"]) or _angle([t["pos"][0], t["pos"][1], t["pos"][2] + 64], look)})
+                if len(out) >= 2:
+                    return out
+    for x, y, z, n in held:
+        if all(math.dist([x, y, z], o["pos"]) > 200 for o in out):
+            out.append({"pos": [x, y, z], "ang": _real_line(mp, foe, [x, y, z]) or _angle([x, y, z + 64], look)})
+        if len(out) >= 2:
+            return out
+    if out:
+        return out
     _land(mp, typ, me)   # the base's throws of the map, loaded
     N, hits, heads = _LANDS.get(mp), [], []
     if N is not None and len(N):
@@ -1430,6 +2323,10 @@ def _victims_of(mp, team, typ, land, me):
                 before = dict(zip(q0.steamid.astype(str), zip(q0.X, q0.Y)))
                 near = sorted((math.hypot(x - lx, y - ly) + 2 * abs(z - lz), (x, y, z), before.get(str(s)))
                               for x, y, z, s in zip(q.X, q.Y, q.Z, q.steamid) if math.hypot(x - lx, y - ly) <= reach and lo <= z - lz <= hi)
+                if typ == "molotov":   # 20/10, his video: "il faut juste que la personne qui subisse ce stuff soit derrière la
+                    # charrette": the one behind what it lands by (farther from you than its fire) first
+                    dl = math.hypot(lx - me[0], ly - me[1])
+                    near.sort(key=lambda t: (math.hypot(t[1][0] - me[0], t[1][1] - me[1]) < dl - 16, t[0]))
                 for _, p, b in near[:2]:   # the closest: the ones it was for; where they were heading (their line)
                     hits.append(p)
                     if b and math.hypot(p[0] - b[0], p[1] - b[1]) > 40:
@@ -1444,10 +2341,10 @@ def _victims_of(mp, team, typ, land, me):
             if len(out) >= 2:
                 break
         return out
-    if typ == "molotov":
+    if typ == "molotov":   # in its fire, on its far side (behind what it flushes), turned to where it came from
         dx, dy = me[0] - lx, me[1] - ly
         d = math.hypot(dx, dy) or 1.0
-        p = [round(lx + 40 * dx / d, 1), round(ly + 40 * dy / d, 1), round(lz, 1)]
+        p = [round(lx - 32 * dx / d, 1), round(ly - 32 * dy / d, 1), round(lz, 1)]
         return [{"pos": p, "ang": _angle([p[0], p[1], p[2] + 64], [me[0], me[1], me[2] + 64])}]
     lo_z, hi_z = (-450, 100) if typ == "flash" else (-200, 200)   # a flash pops in the air: the ones under it
     ax, ay = lx - me[0], ly - me[1]
@@ -1500,6 +2397,28 @@ REPEATABLE = ("standing still", "jumpthrow", "crouching", "jumpthrow + crouching
               "run-throw (moving forward)", "forward + jumpthrow")
 
 
+# 17/10, the user: "fais des tests bot guidés pour les stuff en respectant les consignes affichées pour voir si tout
+# fonctionne": each lineup thrown on the training server by a bot as its words say (tools/train_selftest.py --guided),
+# the ones it missed thrown every other way (tools/lineup_check.py). resources/lineups_checked.json keeps what came out:
+# the way that lands (its words corrected) or none (the lineup left out). Matched on its spot and aim too: the lineup
+# your demos make between the same places may be another one
+CHECKED = os.path.join(config.HERE, "resources", "lineups_checked.json")
+_CHK = None
+
+
+def _checked(did, pos, ang):
+    """The check of that lineup ({ok, how, click, ...}), or None when it was never thrown by the guided bot."""
+    global _CHK
+    if _CHK is None:
+        _CHK = {}
+        for x in (config.read_json(CHECKED, {}) or {}).get("lineups") or []:
+            _CHK.setdefault(x["id"], []).append(x)
+    for x in _CHK.get(did) or []:
+        if all(abs(a - b) <= 16 for a, b in zip(x["pos"], pos)) and all(abs((a - b + 180) % 360 - 180) <= 1 for a, b in zip(x["ang"], ang)):
+            return x
+    return None
+
+
 def _lands_for_you(it):
     """False when your throws of a lineup keep popping together far from its spot (07/10, the smoke to Sniper's Nest:
     three throws 600 u away, 70 u apart: the lineup is not what the demos say, not your hand)."""
@@ -1515,31 +2434,36 @@ def _lands_for_you(it):
 _DUEL_PAIRS = {}
 
 
+DUEL_COLS = ["killer_X", "killer_Y", "killer_Z", "victim_X", "victim_Y", "victim_Z"]
+
+
 def _duel_pairs(mp):
-    """The map's duels: (killer xyz, victim xyz), cached."""
+    """The map's duels: (killer xyz, victim xyz), cached; read from one copy of the map's duels kept as one (22/10, his
+    test video: Prepare's first answer after the app started read Dust2's 987 duels.parquet one by one on the hard disk;
+    ledger.gathered takes in only the new or changed matches)."""
     if mp not in _DUEL_PAIRS:
-        K, V = [], []
-        for d in _map_dirs(mp):
-            try:
-                D = pd.read_parquet(os.path.join(config.OUT, "deep", d, "duels.parquet"),
-                                    columns=["killer_X", "killer_Y", "killer_Z", "victim_X", "victim_Y", "victim_Z"])
-            except Exception:
-                continue
-            K.append(D[["killer_X", "killer_Y", "killer_Z"]].to_numpy(float))
-            V.append(D[["victim_X", "victim_Y", "victim_Z"]].to_numpy(float))
-        _DUEL_PAIRS[mp] = (np.concatenate(K), np.concatenate(V)) if K else (np.zeros((0, 3)), np.zeros((0, 3)))
+        from wily.core import ledger
+        stamps = ledger.folders(config.DEEP)
+        items = [(d, os.path.join(config.DEEP, d, "duels.parquet"), stamps.get(d)) for d in _map_dirs(mp)]
+        try:
+            D = ledger.gathered(f"duel_pairs_{mp}", items, prep=lambda x, k: x.reindex(columns=DUEL_COLS))
+        except Exception as e:
+            print("duel pairs", mp, e, flush=True)
+            D = pd.DataFrame(columns=DUEL_COLS)
+        D = D.reindex(columns=DUEL_COLS).dropna()
+        _DUEL_PAIRS[mp] = (D[DUEL_COLS[:3]].to_numpy(float), D[DUEL_COLS[3:]].to_numpy(float))
     return _DUEL_PAIRS[mp]
 
 
-def _exposed(mp, spot, land):
-    """How many duels of the base had one player at a throw's spot and the other where it lands: they see each other
-    (07/10, the user: "je suis sur une ligne où la personne qui subit mon stuff peut me voir")."""
+def _exposed(mp, spot, land, r=450, dz=220):
+    """How many duels of the base had one player at a throw's spot and the other where it lands (r, dz around it): they
+    see each other (07/10, the user: "je suis sur une ligne où la personne qui subit mon stuff peut me voir")."""
     K, V = _duel_pairs(mp)
     if not len(K):
         return 0
     def near(A, p, r, dz):
         return (np.hypot(A[:, 0] - p[0], A[:, 1] - p[1]) < r) & (np.abs(A[:, 2] - p[2]) < dz)
-    return int((near(K, spot, 120, 90) & near(V, land, 450, 220)).sum() + (near(V, spot, 120, 90) & near(K, land, 450, 220)).sum())
+    return int((near(K, spot, 120, 90) & near(V, land, r, dz)).sum() + (near(V, spot, 120, 90) & near(K, land, r, dz)).sum())
 
 
 def _works(typ, x, side):
@@ -1561,7 +2485,61 @@ CLICK = {"left": "left click", "gauche": "left click", "right": "right click", "
          "middle": "left + right click", "milieu": "left + right click", "both": "left + right click"}
 
 
+_ND, _ND_LOCK, _ND_BUSY = {}, {}, set()
+
+
+def _nd_stamp():
+    """What the map's lineups are made from that can change any minute: your setups (!setup), the defenses and takes
+    Wily found, the guided bot's checks (their files' times)."""
+    from wily.training import setups
+    fs = [setups._file()] + [os.path.join(config.HERE, "resources", f) for f in ("defenses.json", "takes.json", "victims_checked.json", "lineups_checked.json")]
+    return tuple(os.path.getmtime(f) if os.path.exists(f) else 0.0 for f in fs)
+
+
 def nade_drills(sid, mp):
+    """The map's lineups (_nade_drills), the same ones for 5 min (20/10: Prepare's plan, its tiles and its site takes
+    each made them again, at once): made once while the others wait for it, a copy each time (its callers change theirs).
+    Older than 5 min: served as they are and made again behind (21/10: the first Prepare after 5 min waited 30 to 60 s
+    for its site takes); made again at once when one of their files changed (a setup saved, a defense found)."""
+    k = (str(sid), mp)
+    stamp = _nd_stamp()
+    with _ND_LOCK.setdefault(k, threading.Lock()):
+        hit = _ND.get(k)
+        if not hit or hit[2] != stamp:
+            hit = _ND[k] = (time.time(), _nade_drills(sid, mp), stamp)
+        elif time.time() - hit[0] > 300 and k not in _ND_BUSY:
+            _ND_BUSY.add(k)
+            threading.Thread(target=_nd_refresh, args=(k, sid, mp, stamp), daemon=True).start()
+    return copy.deepcopy(hit[1])
+
+
+def _nd_refresh(k, sid, mp, stamp):
+    try:
+        v = _nade_drills(sid, mp)
+        with _ND_LOCK.setdefault(k, threading.Lock()):
+            _ND[k] = (time.time(), v, stamp)
+    except Exception as e:
+        print("nade_drills", mp, e, flush=True)
+    finally:
+        _ND_BUSY.discard(k)
+
+
+def prewarm(sid, n=3):
+    """Prepare's answers made ahead for your most played maps (20/10, the user: "essaye d'accélérer la préparation des
+    entraînements": the first one after the app started waited 15 to 30 s): each module's drills, the site takes, the
+    Momentum parts. A match first: nothing then."""
+    for mp in list(maps(sid))[:n]:
+        if config.in_match():
+            return
+        try:
+            module_counts(sid, mp)
+            execs.offer(sid, mp)
+            momentum_offer(sid, mp)
+        except Exception as e:
+            print("prewarm", mp, e, flush=True)
+
+
+def _nade_drills(sid, mp):
     """The lineups for where you play: thrown from the spots you hold 15-30 s into your rounds, or landing where your
     enemies come from when you hold them (04/10: "I'm an Apps player, I don't play long: this smoke changes nothing for
     me"). Only throws you can repeat from a spot: standing, crouching or a jumpthrow (04/10: "you say running jump: it
@@ -1602,7 +2580,10 @@ def nade_drills(sid, mp):
                 if rel > 0:
                     cands.append((rel * (0.5 + float(x.get("score") or 0)), rel, typ, x))
         items = (progress().get("items") or {})
-        for w, rel, typ, x in sorted(cands, key=lambda c: -c[0])[:16]:
+        n0 = len(out)
+        for w, rel, typ, x in sorted(cands, key=lambda c: -c[0]):   # the 16 best kept once the bad ones are out (19/10)
+            if len(out) - n0 >= 16:
+                break
             sp = (x.get("setpos") or "").replace(";", " ").split()
             try:
                 pos = [float(v) for v in sp[1:4]]
@@ -1612,8 +2593,23 @@ def nade_drills(sid, mp):
             did = f"nade:{mp}:{side}:{typ}:{x['from_key']}>{x['to_key']}"
             if not _lands_for_you(items.get(did)):
                 continue
-            land0 = _land(mp, typ, pos) or _world(mp, *x["to_px"]) if x.get("to_px") else None
-            if not died_ok.get(id(x)) and land0 and len(land0) >= 2 and _exposed(mp, pos, land0 if len(land0) >= 3 else [land0[0], land0[1], pos[2]]) >= 3:
+            alt_how = None
+            if not spot_walls(mp, pos)["ok"]:   # no wall, no corner to find its spot by: the base's same lineup from one, else none
+                l0 = _land(mp, typ, pos, ang) or (_world(mp, *x["to_px"]) if x.get("to_px") else None)
+                alt = _findable_spot(mp, typ, side, x["from_key"], l0) if l0 else None
+                if not alt:
+                    continue
+                pos, ang, alt_how = alt
+            chk = _checked(did, pos, ang)
+            if chk and not chk.get("ok"):
+                continue   # the guided bot found no way of throwing it that lands
+            land0 = _land(mp, typ, pos, ang) or _world(mp, *x["to_px"]) if x.get("to_px") else None
+            l3 = (land0 if len(land0) >= 3 else [land0[0], land0[1], pos[2]]) if land0 and len(land0) >= 2 else None
+            if l3 and typ != "flash" and _exposed(mp, pos, l3, 150, 120) >= 10:
+                continue   # 19/10, his 17/10 video: "j'envoie le stuff à un endroit que je vois déjà ... si quelqu'un a déjà la
+                # ligne je suis mort": the base's duels between this spot and the very place it lands (150 u around it: the
+                # 450 u below took in half the map; Fachwerk's smoke to A site 13, the molotov he liked on Long A 4)
+            if l3 and not died_ok.get(id(x)) and _exposed(mp, pos, l3) >= 3:
                 continue   # 07/10: "je suis visible de là où j'envoie la grenade ... tu peux me faire tuer alors que je suis en train de stuff"
             if typ != "flash" and (x["from_key"] == x["to_key"] or (land0 and len(land0) >= 2 and math.hypot(land0[0] - pos[0], land0[1] - pos[1]) < 500)):
                 continue   # 10/10, a Molotov → T Main from T Main's exit: "je suis vraiment au contact de la zone que je dois molo ... ça sert à rien d'envoyer ce stuff"
@@ -1621,7 +2617,9 @@ def nade_drills(sid, mp):
             if not item or not x.get("to_px"):
                 continue
             name = {"smoke": i18n.tr("Smoke"), "flash": i18n.tr("Flash"), "he": "HE", "molotov": i18n.tr("Molotov")}[typ]
-            land = _land(mp, typ, pos) or _world(mp, *x["to_px"])
+            land = _land(mp, typ, pos, ang) or _world(mp, *x["to_px"])
+            if _thrower_sees(mp, typ, pos, land):
+                continue
             mine = x["from_key"] in top
             if side in based:   # the base's spots, not yours
                 why = i18n.tr("from {zone}, a spot the base throws it from", zone=x['from']) if mine else i18n.tr("onto {zone}, where they come from", zone=x['to'])
@@ -1629,17 +2627,17 @@ def nade_drills(sid, mp):
                 why = i18n.tr("from {zone}, your spot", zone=x['from']) if mine else i18n.tr("onto {zone}, where they come at you from your spot", zone=x['to'])
             out.append({"id": did, "kind": "nade", "map": mp,
                         "title": f"{name} → {x['to']}", "tip": f"{why} · {x.get('timer') or ''}".strip(" ·"),
-                        "team": team, "type": typ, "item": item, "how": config.key_free(x.get("how")) or "standing still",
+                        "team": team, "type": typ, "item": item, "how": (chk or {}).get("how") or alt_how or config.key_free(x.get("how")) or "standing still",
                         # 09/10, his HE to Mini, told "left click": "c'est pas que du left click, c'est du left et right
                         # click". The demos hold the buttons for almost no throw (CS2's don't record them: 154 of 1,028,672
                         # in the base): the click only when it is known, never a "left click" by default
-                        "click": CLICK.get(x.get("click") or "", ""),
+                        "click": (chk or {}).get("click") or CLICK.get(x.get("click") or "", ""),
                         "me": {"pos": pos, "ang": ang}, "target": land, "victims": [], "_vic": [side, x.get("t_med")],
                         "clock": round(max(10.0, 115 - float(x.get("t_med") or 0) + 3), 1) if x.get("t_med") else 0,
                         "weight": 1 + 10 * w})
             # a CT's early smoke or molotov: thrown against a real rush, in its timing (06/10, the user: "quand c'est une
             # smoke de timing j'aimerais bien avoir la smoke dans le timing")
-            if side == "CT" and typ in ("smoke", "molotov") and (x.get("usual") == "debut" or (x.get("t_med") or 99) <= 25):
+            if RUSH_ON and side == "CT" and typ in ("smoke", "molotov") and (x.get("usual") == "debut" or (x.get("t_med") or 99) <= 25):
                 try:
                     if E is None:
                         E = _early(mp)
@@ -1647,6 +2645,8 @@ def nade_drills(sid, mp):
                 except Exception as e:
                     print("rush", mp, x.get("to"), e, flush=True)
                     R = None
+                if R and not _rush_hits(typ, land, R["tracks"]):
+                    R = None   # its fire or its cloud above or below the way they run (21/10, Dust2: a molotov 137 u above Top Mid's rushers, a smoke on the tunnel's roof)
                 if R:
                     at = max(0.0, 115 - R["at"])
                     out[-1].update(tracks=R["tracks"], step=RUSH_STEP, clock=R["clock"], rush_at=R["at"], weight=out[-1]["weight"] * 1.5,
@@ -1655,8 +2655,29 @@ def nade_drills(sid, mp):
     return out
 
 
+# 22/10, his test video (16:19): "sincèrement, pour l'instant fais disparaître toutes les parties anti-rush, il n'y a pas
+# vraiment de plus-value ... si je ne te dis pas l'inverse, fais disparaître les parties anti-rush": no anti-rush drill
+RUSH_ON = False
+RUSH_HIT = {"molotov": (150.0, 48.0), "smoke": (144.0, 110.0)}   # its fire's reach on their floor; its cloud's radius and height
+
+
+def _rush_hits(typ, land, tracks):
+    """One of the rushers runs through what it does: a molotov's fire on the floor they run on, a smoke's cloud around the
+    way they come (21/10, Dust2's anti-rush: the base's place is where it landed, not always where they pass)."""
+    if not land or len(land) < 3 or typ not in RUSH_HIT:
+        return True
+    r, dz = RUSH_HIT[typ]
+    for tr in tracks:
+        P = np.asarray(tr.get("path") or [], float).reshape(-1, 5)
+        near = P[np.hypot(P[:, 0] - land[0], P[:, 1] - land[1]) <= r]
+        if len(near) and float(np.abs(near[:, 2] - land[2]).min()) <= dz:
+            return True
+    return False
+
+
 EARLY_D = os.path.join(config.OUT, "train_early")
 RUSH_R, RUSH_DZ, RUSH_STEP, RUSH_LEAD = 240.0, 140.0, 32, 7.0   # the spot reached: 240 u, same floor; samples every 0.5 s
+STEP_Z = 18.0   # CS2's step height: a sample higher than both its neighbours by more is a jump
 
 
 def _early(mp, demos=250):
@@ -1691,12 +2712,15 @@ def _early(mp, demos=250):
     return E
 
 
-def _rush(mp, land, flight, ready=0.0, E=None):
+def _rush(mp, land, flight, ready=0.0, E=None, q=(0.0, 0.2), after=4.0):
     """A real rush through a grenade's spot (06/10, the user on a CT smoke: "une smoke anti rush: j'aimerais avoir la
     situation du mec qui rush et qui se prend cette smoke, pour avoir la smoke dans le timing"): of the base's Ts who
     reach that spot in the first 40 s after a CT can have it up there (ready: when the CTs usually get to the throw, plus
     the flight), the fastest fifth are the rushes; their round with the most Ts through it within 4 s gives the runners.
     GO when the CT gets to the spot, or 7 s before the last moment to throw when the rush is slower.
+    q: the share of them by how fast they got there (a site defense, 21/10: the typical takes, 0.4 to 0.6: the fastest
+    fifth asked one defender for four grenades from four corners in two seconds). after: how long each one's way goes on
+    past the spot (a defense: on to the site, its later grenades on their way).
     -> {"tracks": [{zone, path, arrive}], "clock": the clock at GO, "at": the round's time the first one gets there}"""
     if not land or len(land) < 3:
         return None
@@ -1708,21 +2732,39 @@ def _rush(mp, land, flight, ready=0.0, E=None):
     A = A[A.t >= max(6.0, ready + flight + 2.5)]   # a rush the grenade can stop: drawn (it comes at GO), thrown, up (not a T whose spawn is next to it)
     if len(A) < 10:
         return None
-    fast = A[A.t <= A.t.quantile(0.2)]
-    best = None
+    fast = A[(A.t >= A.t.quantile(q[0])) & (A.t <= A.t.quantile(q[1]))]
+    cands = []
     for (d, r), g in fast.groupby(["d", "round"]):
         g = g.sort_values("t")
         k = int((g.t <= g.t.iloc[0] + 4).sum())
-        if best is None or k > best[0] or (k == best[0] and g.t.iloc[0] < best[1]):
-            best = (k, float(g.t.iloc[0]), d, r, g[g.t <= g.t.iloc[0] + 4])
-    _, t_arr, d, r, who = best
-    t_go = max(0.0, round(max(ready, t_arr - flight - RUSH_LEAD) * 2) / 2)
+        cands.append((k, float(g.t.iloc[0]), d, r, g[g.t <= g.t.iloc[0] + 4]))
+    cands.sort(key=lambda c: (-c[0], c[1]))
+    # the round with the most Ts through it within 4 s whose runners a bot can replay all of (22/10: its jumpers left out,
+    # Dust2's CT A hold went from 6 Ts to 2): the next one when a round loses some, the fullest found at most 30 rounds in
+    best = None
+    for k, t_arr, d, r, who in cands[:30]:
+        t_go = max(0.0, round(max(ready, t_arr - flight - RUSH_LEAD) * 2) / 2)
+        tracks = _rush_tracks(mp, E, d, r, who, t_go, after)
+        if best is None or len(tracks) > len(best[2]):
+            best = (t_arr, t_go, tracks)
+        if len(tracks) >= min(k, 4):
+            break
+    if not best or not best[2]:
+        return None
+    t_arr, t_go, tracks = best
+    return {"tracks": tracks[:4], "clock": round(115 - t_go, 1), "at": round(t_arr, 1)}
+
+
+def _rush_tracks(mp, E, d, r, who, t_go, after):
+    """The ways of a round's runners from GO to after their spot, each one a bot can walk (no gap, no jump)."""
     tracks = []
     for sid_, ta in zip(who.sid, who.t):
-        g = E[(E.d == d) & (E["round"] == r) & (E.sid == sid_) & (E.t >= t_go - 0.01) & (E.t <= ta + 4)].sort_values("t")
+        g = E[(E.d == d) & (E["round"] == r) & (E.sid == sid_) & (E.t >= t_go - 0.01) & (E.t <= ta + after)].sort_values("t")
         if len(g) < 4 or abs(float(g.t.iloc[0]) - t_go) > 0.01 or (np.diff(g.t.to_numpy()) > 0.51).any():
             continue   # a gap in its samples: not walked
         P = g[["X", "Y", "Z"]].to_numpy(float)
+        if len(P) > 2 and float((P[1:-1, 2] - np.maximum(P[:-2, 2], P[2:, 2])).max()) > STEP_Z:
+            continue   # a jump on its way (a bot can't jump: 22/10, Dust2's anti-rush, a rusher put back on his way where he jumped)
         path, yaw = [], 0.0
         for i in range(len(P)):
             if i + 1 < len(P) and math.hypot(P[i + 1][0] - P[i][0], P[i + 1][1] - P[i][1]) > 4:
@@ -1730,9 +2772,7 @@ def _rush(mp, land, flight, ready=0.0, E=None):
             path += [round(P[i][0], 1), round(P[i][1], 1), round(P[i][2], 1), round(yaw, 1), 0.0]
         z0 = str(g.zone.iloc[0])
         tracks.append({"zone": replay_zone(z0, mp) if z0 and z0 != "nan" else "rush", "path": path, "arrive": round(float(ta) - t_go, 1)})
-    if not tracks:
-        return None
-    return {"tracks": tracks[:4], "clock": round(115 - t_go, 1), "at": round(t_arr, 1)}
+    return tracks
 
 
 def clip_drills(sid, mp):
@@ -1748,16 +2788,35 @@ def clip_drills(sid, mp):
             item = NADE_ITEM[typ][team] if typ == "molotov" else NADE_ITEM.get(typ)
             if not item or not x.get("pos") or not x.get("land"):
                 continue
+            chk = _checked(f"clip:{c['id']}:{i}", x["pos"], x["ang"])
+            if chk and not chk.get("ok"):
+                continue   # the guided bot found no way of throwing it that lands
             name = {"smoke": i18n.tr("Smoke"), "flash": i18n.tr("Flash"), "he": "HE", "molotov": i18n.tr("Molotov")}[typ]
             seen = i18n.tr("{n} throws in the base, {p} by pros", n=x['uses'], p=x['pro_uses']) if x.get("uses") else i18n.tr("not in the base yet")
             out.append({"id": f"clip:{c['id']}:{i}", "kind": "nade", "map": mp, "clip": c["id"], "step": i,
                         "title": f"{name} → {x['to']}" + (f" ({i + 1}/{n})" if n > 1 else ""),
                         "tip": f"{i18n.tr(c['title'])} · " + i18n.tr("@{handle}'s clip", handle=c['handle']) + f" · {seen}",
-                        "team": team, "type": typ, "item": item, "how": config.key_free(x.get("how")) or "standing still", "click": x.get("click") or "left click",
+                        "team": team, "type": typ, "item": item, "how": (chk or {}).get("how") or config.key_free(x.get("how")) or "standing still",
+                        "click": (chk or {}).get("click") or x.get("click") or "left click",
                         "me": {"pos": x["pos"], "ang": x["ang"]}, "target": x["land"], "victims": [], "_vic": [c["side"], x.get("t")],
                         "clock": round(max(10.0, 115 - float(x["t"]) + 3), 1) if x.get("t") is not None else 0,
                         "weight": 25})
+    from wily.training import setups
+    try:   # your own setups, saved on the training server with !keep and !setup (19/10): like a clip, whole and in order
+        out += setups.drills(mp)
+    except Exception as e:
+        print("setups", mp, e, flush=True)
     return out
+
+
+def _setups_of(mp, drills):
+    """The base's lineups that go together as setups (setups.compose, 19/10): tagged so a block comes whole."""
+    from wily.training import setups
+    try:
+        return setups.compose(mp, drills)
+    except Exception as e:
+        print("setups", mp, e, flush=True)
+        return drills
 
 
 def _whole_clips(picked, cands):
@@ -1854,6 +2913,10 @@ WB_WEAPON = {"ak47": "weapon_ak47", "m4a1_silencer": "weapon_m4a1_silencer", "m4
 def wallbang_drills(sid, mp):
     """The map's wallbangs (wallbangs.py: the base's kills through walls from one spot onto one place): you on the
     spot, the bots where the victims stood behind the wall, the weapon most of those kills were made with."""
+    # 30/10, his review: "les wallbangs, ça va être comme les momentum ... on va les désactiver pour l'instant, et puis je
+    # les rentrerai à la main plus tard": none offered (the boosts stay), COACH_SHOW_HIDDEN=1 brings them back
+    if not os.environ.get("COACH_SHOW_HIDDEN"):
+        return []
     from wily.insights import wallbangs
     out = []
     for w in wallbangs.load(mp)[:10]:
@@ -1877,7 +2940,20 @@ def wallbang_drills(sid, mp):
     return out
 
 
-def boost_drills(sid, mp):
+def _on_floor(mp, p):
+    """A target's feet on the floor under or over it (26/10, Mirage's Short boost: its target 6 u under the mesh's floor,
+    gone from its very start, never in sight): the mesh's height there when it is within 18 u."""
+    try:
+        from wily.training import navmesh
+        q = navmesh.nearest(mp, p)
+    except Exception:
+        q = None
+    if q and math.hypot(q[0] - p[0], q[1] - p[1]) < 4 and abs(q[2] - p[2]) <= 18:
+        return [p[0], p[1], round(float(q[2]), 1)]
+    return p
+
+
+def boost_drills(sid, mp, raw=False):
     """The map's boosts that kill (boosts.py, 06/10, the user: "sur Nuke il y a très peu de wallbangs, par contre il y a
     des boosts, et ça c'est intéressant", "des moves de boost pour être au-dessus des smokes"): you on the teammate's
     head where the base's players stood (a bot below, crouched when they boosted on a crouched one), still targets where
@@ -1896,10 +2972,50 @@ def boost_drills(sid, mp):
                     "team": team, "me": {"pos": top, "ang": [b.get("pitch") or 0, b.get("yaw") or 0]},
                     "mate": {"pos": base, "ang": [0, b.get("yaw") or 0], "zone": "your boost", "duck": duck},
                     "weapons": ["weapon_knife", wp], "bot_weapons": ["weapon_knife", RIFLE[5 - team]],
-                    "bots": [{"pos": v, "ang": _angle(v, top), "zone": b["victim_places"][0] if b.get("victim_places") else b["place"]} for v in b["victims"][:3]],
+                    "bots": [{"pos": _on_floor(mp, v), "ang": _angle(v, top), "zone": b["victim_places"][0] if b.get("victim_places") else b["place"]} for v in b["victims"][:3]],
                     "clock": round(max(10.0, 115 - float(b["t_med"]) + 3), 1) if b.get("t_med") is not None else 0,
                     "weight": 1 + b["kills"] / 3})
-    return out
+    # one boost a spot (22/10 report and 24/10 real test, Dust2's Top Mid: three of the base's boosts on the same top, three
+    # drills of one id that met in its checks): the one that killed most
+    seen, one = set(), []
+    for d in sorted(out, key=lambda d: -d["weight"]):
+        if d["id"] not in seen:
+            seen.add(d["id"])
+            one.append(d)
+    return one if raw else [d for d in (_boost_seen(mp, d) for d in one) if d]
+
+
+def _boost_seen(mp, d):
+    """A boost as tools/boost_check.py found it on the server (24/10, the real test of Mirage's Short boost: up on the
+    crouched teammate, a wall 45 u in front of the eyes, neither target in sight): its targets you see from up there, on
+    the teammate that shows the most (a standing one 18 u higher), none: no boost. Not checked yet: as it is."""
+    key = f"{mp}|{round(d['me']['pos'][0])}|{round(d['me']['pos'][1])}|{round(d['me']['pos'][2])}"
+    # a boost no try ever got a kill from, taken off by hand with why (03/11, his rule: no forced content; kept apart from
+    # boost_check's book, which a new check writes over)
+    if key in (config.read_json(os.path.join(config.HERE, "resources", "boost_withdrawn.json"), {}) or {}):
+        return None
+    rec = (config.read_json(os.path.join(config.HERE, "resources", "boost_checked.json"), {}) or {}).get(key)
+    if not rec or len(rec.get("crouched") or []) != len(d["bots"]):
+        return d
+    # 27/10 it took a standing one whenever it showed as many (the plugin's on-ground flag: up on a crouched teammate you were
+    # off the ground for the game, every shot with the air's spread, AWP shots 100-200 u off at 1134 u on Anubis's B Main;
+    # on a standing one, Mirage's Short, within 16 u at 973 u)
+    # 28/10: the base's own way when it shows any (lab 5: that on-ground flag was the plugin's placement, dropped on the
+    # teammate while it crouched under you; put on it once crouched you are on the ground. Raised 18 u onto a standing one,
+    # Dust2's Top Mid boost had your head in the arch over it, stuck there at every height)
+    own = "crouched" if d["mate"].get("duck") else "standing"
+    other = "standing" if own == "crouched" else "crouched"
+    way = own if sum(rec.get(own) or []) else other
+    bots = [b for b, ok in zip(d["bots"], rec[way]) if ok]
+    if not bots:
+        return None
+    if way == "standing" and d["mate"].get("duck"):
+        top = d["me"]["pos"]
+        d = dict(d, me=dict(d["me"], pos=[top[0], top[1], round(top[2] + 18.0, 1)]), mate=dict(d["mate"], duck=False))
+    elif way == "crouched" and not d["mate"].get("duck"):   # the base's on a standing one: 18 u lower on a crouched one (03/11)
+        top = d["me"]["pos"]
+        d = dict(d, me=dict(d["me"], pos=[top[0], top[1], round(top[2] - 18.0, 1)]), mate=dict(d["mate"], duck=True))
+    return dict(d, bots=bots)
 
 
 def situation_drills(sid, mp, all_sc=None):
@@ -1908,16 +3024,73 @@ def situation_drills(sid, mp, all_sc=None):
              "tip": (i18n.tr("you died to {who} ({weapon})", who=s['by'], weapon=s.get('weapon')) if s.get("by") else i18n.tr("you lost it")) +
                     ("" if s["kind"] == "clutch" else (" · " + i18n.tr("first death") if s.get("opening") else "") + ("" if s.get("traded") else " · " + i18n.tr("not traded"))),
              "mid": s["mid"], "round": s["round"], "sk": s["kind"], "t": s["t"], "weight": s["score"]}
-            for s in (all_sc if all_sc is not None else replay.scenarios(sid, n=40)) if s["map"] == mp]
+            for s in (all_sc if all_sc is not None else replay.scenarios(sid, n=40)) if s["map"] == mp
+            # a clutch whose bomb leaves no time to make it, one where nobody came twice: not offered (02/11, his rules)
+            and (s["kind"] != "clutch" or replay.clutch_time_ok(s["id"])) and s["id"] not in _withdrawn_now()]
+
+
+_WD = {"at": 0.0, "ids": set()}
+
+
+def _withdrawn_now():
+    """replay.passive_withdrawn(), read again each 30 s at most (a session's build asks it for every situation)."""
+    import time as _t
+    if _t.time() - _WD["at"] > 30:
+        _WD["ids"], _WD["at"] = replay.passive_withdrawn(), _t.time()
+    return _WD["ids"]
 
 
 # ---------------------------------------------------------------- the session
 
-def build(sid, minutes=20, where="random", difficulty=2, focus=None):
+# your weapon for the session (20/10, the user: "il faudrait pouvoir choisir son arme (ak, m4a4, m4a1s, usp, glock,
+# deagle, awp)"): Prepare's choice; none: the ones you play in your matches (_my_guns)
+WEAPONS = {"ak47": "weapon_ak47", "m4a4": "weapon_m4a1", "m4a1s": "weapon_m4a1_silencer", "awp": "weapon_awp",
+           "deagle": "weapon_deagle", "usp": "weapon_usp_silencer", "glock": "weapon_glock"}
+PISTOLS = {"weapon_deagle", "weapon_usp_silencer", "weapon_glock", "weapon_hkp2000", "weapon_p250", "weapon_fiveseven", "weapon_tec9",
+           "weapon_cz75a", "weapon_elite", "weapon_revolver"}
+NADES = {"weapon_smokegrenade", "weapon_flashbang", "weapon_hegrenade", "weapon_molotov", "weapon_incgrenade", "weapon_decoy"}
+ARMED = ("aim", "crossfire", "defend", "push", "momentum")   # the blocks fought with your gun (Stuff: grenades; Situations:
+# your round's own loadout; Wallbang: the gun that goes through that wall)
+
+
+def _swap(ws, w):
+    """A drill's weapons with yours: a rifle or the AWP in the main one's place (a pistol round stays one), a pistol
+    alone in place of both; the order kept (the last one is the one in your hands)."""
+    main = lambda x: x not in PISTOLS and x != "weapon_knife" and x not in NADES
+    if w in PISTOLS:
+        out, put = [], False
+        for x in ws:
+            if x in PISTOLS or main(x):
+                if not put:
+                    out.append(w)
+                    put = True
+            else:
+                out.append(x)
+        return out
+    return [w if main(x) else x for x in ws] if any(main(x) for x in ws) else ws
+
+
+def _arm(blocks, key):
+    w = WEAPONS.get(key)
+    if not w:
+        return
+    for b in blocks:
+        if b["kind"] in ARMED:
+            for d in b["drills"]:
+                if d.get("weapons"):
+                    d["weapons"] = _swap(d["weapons"], w)
+
+
+def build(sid, minutes=20, where="random", difficulty=2, focus=None, record=True, tag=None, exec_key=None, pick=None, weapon=None, seed=None, only=None,
+          every=False):
     """The plan of a session: blocks of each map, drills picked (due first, then at random by importance), the
     situations' scenario files built. Written to the server's coach/sessions folder. focus: one module of FOCUS for
-    the whole time, on the first map (a focus block), its drills again until the time is full."""
+    the whole time, on the first map (a focus block), its drills again until the time is full. exec_key: a Stuff focus
+    block's site take or defense instead of a time (19/10, execs.py): its lineups one by one, then all of them at once."""
     sid = str(sid)
+    if seed is not None:   # 29/10, the tests' fixed set (his rule: 90 % on 3 runs of the same): the same picks each time
+        random.seed(int(seed))
+        np.random.seed(int(seed) % (2 ** 32))
     p = ingest()
     nsess = len(p["sessions"])
     mine = maps(sid)
@@ -1971,9 +3144,9 @@ def build(sid, minutes=20, where="random", difficulty=2, focus=None):
             blocks.append({"map": aim_map(), "kind": "aim", "seconds": aim_s, "drills": aim_range_drills(sid, aim_s)})
     for mp in chosen:
         secs_of = dict(plan_of.get(mp) or [])
-        pr = practice_drills(sid, mp) if {"defend", "push"} & set(secs_of) else []   # a focus block of another module: not built
+        pr = practice_drills(sid, mp, difficulty) if {"defend", "push"} & set(secs_of) else []   # a focus block of another module: not built
         fns = {"defend": lambda s_, m_: [d for d in pr if d.get("mode") == "defend"],
-               "push": lambda s_, m_: [d for d in pr if d.get("mode") == "prefire"], "nade": lambda s_, m_: nade_drills(s_, m_) + clip_drills(s_, m_),
+               "push": lambda s_, m_: [d for d in pr if d.get("mode") == "prefire"], "nade": lambda s_, m_: _setups_of(m_, nade_drills(s_, m_)) + clip_drills(s_, m_),
                "wallbang": lambda s_, m_: wallbang_drills(s_, m_) + boost_drills(s_, m_), "situation": lambda s_, m_: situation_drills(s_, m_, all_sc),
                "momentum": lambda s_, m_: []}
         if not pr:   # no site's drills (a hostage map): the situations take the defense's and the prefire's time
@@ -1984,12 +3157,18 @@ def build(sid, minutes=20, where="random", difficulty=2, focus=None):
         for kind, fn in kinds:
             secs = secs_of[kind] + spare
             if kind == "momentum":   # its own picks: the level's order, each variant's drills in a row, as many as its time holds
-                md = momentum.drills(sid, mp, secs, _my_guns(sid), RIFLE, p["items"], nsess)
+                mpick = pick if pick in momentum.PICKS else None   # 20/10: or a choice of Prepare's, each drill once
+                md = momentum.drills(sid, mp, secs, _my_guns(sid), RIFLE, p["items"], nsess, pick=mpick)
                 if md:
-                    blocks.append({"map": mp, "kind": kind, "seconds": int(secs), "drills": md})
+                    blocks.append({"map": mp, "kind": kind, "seconds": int(sum(d["seconds"] for d in md) * 1.5) if mpick else int(secs), "drills": md})
                 spare = 0.0 if md else secs
                 continue
             cands = fn(sid, mp)
+            if only is not None:   # the recette (29/10): those drills, each once, none drawn
+                cands = [c for c in cands if c.get("id") in only]
+            ex = kind == "nade" and exec_key in execs.KEYS
+            if ex:   # 19/10, his video: "à la place d'avoir 10 minutes, ici j'aurai exec A"
+                cands, secs = execs.sequence(sid, mp, exec_key)   # the lineups as they are (not the composed setups' titles)
             if not cands:
                 spare = secs
                 continue
@@ -2011,16 +3190,24 @@ def build(sid, minutes=20, where="random", difficulty=2, focus=None):
                 if kind == "situation" and (str(c.get("mid")), int(c.get("round") or 0)) in bad:
                     c["weight"] = c.get("weight", 1.0) * 3
             n = max(1, int(secs / EST[kind]) + 1)
-            picked = _pick(cands, n, p["items"], nsess, weight=lambda c: c.get("weight", 1.0))
-            if kind == "nade":
+            # every: the measure (29/10, his rule: a block validated only with every drill of its panel tested, 3 runs >= 90 %):
+            # all of them, each once, its time as long as they need
+            picked = list(cands) if ex or only is not None or every else _pick(cands, n, p["items"], nsess, weight=lambda c: c.get("weight", 1.0))
+            if every:
+                secs = max(secs, len(picked) * EST.get(kind, 60) * 2.6)   # a failed one is played again at once (29/10: the 6th never came)
+            if kind == "nade" and not ex:
                 picked = _whole_clips(picked, cands)
             drills = []
             for d in picked:
                 if kind == "nade":   # guided, then the spot and how, then the spot only
                     d["level"] = min(2, (p["items"].get(d["id"]) or {}).get("box", 0))
+                    for x in [d] + list(d.get("members") or []):   # its circle the throw's own, when measured (23/10)
+                        tol = aim_tol(x)
+                        if tol:
+                            x["aim_tol"] = tol
                     side_, t_med = d.pop("_vic", [None, None])
                     try:   # a rush's runners are the ones it is for: no victims to show after
-                        d["victims"] = [] if d.get("tracks") else _victims(mp, d["team"], d["type"], d.get("target"), d["me"]["pos"], side_, t_med)
+                        d["victims"] = [] if d.get("tracks") or d.get("mode") == "exec" else _victims(mp, d["team"], d["type"], d.get("target"), d["me"]["pos"], side_, t_med, see=d.pop("_see", None), avoid=exec_avoid(d, picked))
                     except Exception as e:
                         print("victims", d["id"], e, flush=True)
                 if kind == "push":
@@ -2030,7 +3217,7 @@ def build(sid, minutes=20, where="random", difficulty=2, focus=None):
                     todo.append(d)
                 d.pop("weight", None)
                 drills.append(d)
-            if focus and drills:   # a focus block: its drills again until its time is full, each once before any twice,
+            if focus and drills and not ex and only is None and not every:   # a focus block: its drills again until its time is full, each once before any twice,
                 k0 = len(drills)   # three times at most (one wallbang 24 times is no training: the block is shorter)
                 while len(drills) * EST[kind] < secs * 1.2 and len(drills) < k0 * FOCUS_REPEAT:
                     drills.append(copy.deepcopy(drills[len(drills) % k0]))
@@ -2039,9 +3226,16 @@ def build(sid, minutes=20, where="random", difficulty=2, focus=None):
     if not blocks:
         raise ValueError(i18n.tr("nothing of this module on this map yet") if focus else "nothing to train on these maps yet")
     chosen = chosen or list(dict.fromkeys(b["map"] for b in blocks))   # a focus Crossfire on the aim map
-    sid_ = time.strftime("s%Y%m%d_%H%M%S")
+    sid_ = f"{tag}_{time.strftime('%Y%m%d_%H%M%S')}" if tag else time.strftime("s%Y%m%d_%H%M%S")   # tag: a self-test's
     sess = {"id": sid_, "minutes": minutes, "where": where, "maps": chosen, "difficulty": int(difficulty),
             "level": level(p["xp"]), "warmup": warm, "focus": focus, "blocks": blocks}
+    if exec_key:
+        sess["exec"] = exec_key
+    if seed is not None:   # the plugin's own draws too (waves, ways, rushers)
+        sess["seed"] = int(seed)
+    if weapon in WEAPONS:   # your weapon in every block fought with one
+        _arm(blocks, weapon)
+        sess["weapon"] = weapon
     os.makedirs(SESS, exist_ok=True)
     replay.write_ui()   # the server's words in the app's language, read with the session (13/10)
     first = [d for d in blocks[0]["drills"] if blocks[0]["kind"] == "situation"][:1]
@@ -2052,9 +3246,10 @@ def build(sid, minutes=20, where="random", difficulty=2, focus=None):
     if rest:   # the others while you play the first blocks (demo parsing: about 2 s each), one after the other: two
         import threading   # demos parsed at once crashed a player's app in polars (08/10, replay.PARSE)
         threading.Thread(target=lambda: [_scenario(sid, d) for d in rest], daemon=True).start()
-    p["sessions"].append({"id": sid_, "t": time.time(), "minutes": minutes, "maps": chosen, "done": False, "difficulty": int(difficulty),
-                          "focus": focus})
-    _save(p)
+    if record:   # not a self-test's (tools/train_selftest.py): those never join your progress
+        p["sessions"].append({"id": sid_, "t": time.time(), "minutes": minutes, "maps": chosen, "done": False, "difficulty": int(difficulty),
+                              "focus": focus})
+        _save(p)
     return sess
 
 
@@ -2110,6 +3305,11 @@ COUNTS_F = os.path.join(config.OUT, "train_counts.json")
 _COUNTS_LOCK = threading.Lock()
 
 
+def momentum_offer(sid, mp):
+    """Prepare's Momentum choices on that map (momentum.offer)."""
+    return momentum.offer(sid, mp, _my_guns(sid), RIFLE)
+
+
 def module_counts(sid, mp):
     """How many drills each module has on that map (Prepare's focus tiles), None where it can't be told; Crossfire's:
     its spots there (0: it runs on the aim map). The defense's, the prefire's, the stuff's and the wallbang's are kept a
@@ -2140,7 +3340,7 @@ def module_counts(sid, mp):
                 print("module counts:", e, flush=True)
     return {"crossfire": len((crossfire.load(mp, build=False) or {}).get("spots") or []), **hit["n"],
             "situation": n(lambda: len(situation_drills(sid, mp, replay.scenarios(sid, n=40))) if mp in mine else 0),
-            "momentum": n(lambda: momentum.count(mp))}
+            "momentum": 0 if "momentum" in HIDDEN else n(lambda: momentum.count(mp))}
 
 
 def preview(sid, minutes=20, where="random", focus=None):
@@ -2323,12 +3523,22 @@ def _refused_since(start_size):
     with open(f, "rb") as fh:
         fh.seek(0 if size < start_size else start_size)
         t = fh.read().decode("utf-8", "replace")
-    m = re.search(r"Disconnection during connection phase\. Sign-on state: \d+ \((\w+)\)\. Disconnect reason: (\w+)", t)
-    if not m:
+    ms = list(re.finditer(r"Disconnection during connection phase\. Sign-on state: \d+ \((\w+)\)\. Disconnect reason: (\w+)", t))
+    if not ms:
         return None
-    sig = re.search(r"Signature failed for [^\r\n]*?([\w.-]+\.vpk)", t)
+    m = ms[-1]   # the last one: a map change's cut before it is no refusal (below)
+    if m.group(2) in ("NETWORK_DISCONNECT_LOOPSHUTDOWN", "NETWORK_DISCONNECT_DISCONNECT_BY_USER"):
+        # the server changed its map while the game came in (17/10, the user restarting a session: said in red in
+        # Prepare while CS2 loaded the new map and got in), or you left it yourself (19/10, his reconnection: "c'est
+        # bizarre comme erreur"): the game follows it or you come back, the wait goes on
+        return None
+    # a map file the game refused: the server's map's own (maps\, a Workshop map's folder), not one of the Workshop
+    # items you are subscribed to (19/10: six "failed" in every console, harmless, and made it a refusal)
+    ids = set(replay.WORKSHOP.values())
+    sig = next((g for g in re.findall(r"Signature failed for ([^\r\n]*?\.vpk)", t)
+                if re.search(r"[\\/]maps[\\/]|^maps[\\/]", g) or any(w in g for w in ids)), None)
     if sig:
-        return i18n.tr("CS2 refused the map file {file} (not signed by Valve) and went back to its menu", file=sig.group(1))
+        return i18n.tr("CS2 refused the map file {file} (not signed by Valve) and went back to its menu", file=re.split(r"[\\/]", sig)[-1])
     return i18n.tr("CS2 left the server while loading the map ({what} at {when})", what=m.group(2), when=m.group(1))
 
 
@@ -2412,7 +3622,62 @@ def _quiet_start(mp):
         print("training server early start:", e, flush=True)
 
 
-def play(sid, minutes=20, where="random", difficulty=2, focus=None):
+RECETTE_F = os.path.join(config.OUT, "realtest", "recette.json")   # tools/recette.py: the drills the latest tests failed
+
+
+def recette_build(sid, difficulty=2, seed=None):
+    """The recette (28/10, the user: "des séances de labo ... uniquement à moi ... une session intensive de tous les éléments
+    qui posent problème"): every drill the latest tests failed (tools/recette.py's list), map by map, each once, none
+    drawn. A Stuff site take or defense comes whole (its lineups, then all of them at once)."""
+    groups = {}
+    for x in config.read_json(RECETTE_F, []) or []:
+        groups.setdefault((x["map"], x["focus"], x.get("exec")), set()).add(x["id"])
+    blocks = []
+    for (mp, kind, ex), ids in groups.items():
+        if kind not in FOCUS:
+            continue
+        try:
+            sub = build(sid, minutes=max(5, min(90, len(ids) * EST.get(kind, 60) // 60 + 1)), where=mp, difficulty=difficulty, focus=kind,
+                        record=False, tag="recette_part", exec_key=ex if kind == "nade" else None, seed=seed, only=None if ex else ids)
+        except ValueError as e:
+            print("recette", mp, kind, ex, e, flush=True)
+            continue
+        blocks += sub["blocks"]
+    if not blocks:
+        raise ValueError("nothing failed in the latest tests")
+    maps_ = list(dict.fromkeys(b["map"] for b in blocks))
+    blocks.sort(key=lambda b: maps_.index(b["map"]))   # one map change per map
+    sid_ = time.strftime("recette_%Y%m%d_%H%M%S")
+    sess = {"id": sid_, "minutes": max(1, sum(b["seconds"] for b in blocks) // 60), "where": ",".join(maps_), "maps": maps_,
+            "difficulty": int(difficulty), "level": level(ingest()["xp"]), "warmup": False, "focus": "recette", "blocks": blocks}
+    if seed is not None:
+        sess["seed"] = int(seed)
+    os.makedirs(SESS, exist_ok=True)
+    json.dump(sess, open(os.path.join(SESS, f"{sid_}.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    return sess
+
+
+def play_recette(sid, difficulty=2, seed=None):
+    """The recette played as one Play: built, the server on its first map, the plugin told, the game sent to it."""
+    import threading
+    if not replay.claim("the recette"):
+        raise RuntimeError(f"{replay.busy()} is starting on the training server: wait for it")
+    try:
+        if not _game_running():
+            _launch_game()
+        sess = recette_build(sid, difficulty, seed)
+        replay.start(sess["blocks"][0]["map"])
+        replay.rcon(f"css_session {sess['id']}")
+        threading.Thread(target=_connect, daemon=True).start()
+        return {"session": {k: sess[k] for k in ("id", "minutes", "maps")},
+                "blocks": [{"map": b["map"], "kind": b["kind"], "seconds": b["seconds"], "n": len(b["drills"])} for b in sess["blocks"]],
+                **replay.status()}
+    finally:
+        replay.release()
+
+
+def play(sid, minutes=20, where="random", difficulty=2, focus=None, exec_key=None, weapon=None, seed=None, every=False):
+    """exec_key: a focus block's choice instead of its time (a Stuff block's site take, a Momentum block's part)."""
     """One Play: the session built, the server on its first map, the plugin told, and the game sent to the server
     (started first if it is closed). You only follow what the game shows."""
     import ctypes
@@ -2424,7 +3689,7 @@ def play(sid, minutes=20, where="random", difficulty=2, focus=None):
     except Exception:
         pass
     try:
-        return _play(sid, minutes, where, difficulty, focus)
+        return _play(sid, minutes, where, difficulty, focus, exec_key, weapon, seed, every)
     finally:
         try:
             ctypes.windll.kernel32.SetThreadPriority(ctypes.windll.kernel32.GetCurrentThread(), 0)
@@ -2433,7 +3698,7 @@ def play(sid, minutes=20, where="random", difficulty=2, focus=None):
         replay.release()
 
 
-def _play(sid, minutes, where, difficulty, focus=None):
+def _play(sid, minutes, where, difficulty, focus=None, exec_key=None, weapon=None, seed=None, every=False):
     import threading
     named = [m for m in str(where).split(",") if m in maps(sid) or m in base_maps()]
     if focus in FOCUS:   # a focus block: one map
@@ -2448,7 +3713,8 @@ def _play(sid, minutes, where, difficulty, focus=None):
     pre = threading.Thread(target=lambda: _quiet_start(first), daemon=True) if first else None
     if pre:   # the server starts while the session is built (06/10: a minute and a half before anything happened)
         pre.start()
-    sess = build(sid, minutes, where, difficulty, focus)
+    sess = build(sid, minutes, where, difficulty, focus, exec_key=exec_key if focus == "nade" else None,
+                 pick=exec_key if focus == "momentum" else None, weapon=weapon, seed=seed, every=every)
     if pre:
         pre.join(timeout=150)   # never an RCON before its map runs: the server would then refuse 127.0.0.1
     replay.start(sess["blocks"][0]["map"])

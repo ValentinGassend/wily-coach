@@ -34,8 +34,10 @@ EXPERIMENTAL = i18n.N_("The training server is experimental on Linux: turn it on
 CSGO = os.path.join(SERVER, "game", "csgo")
 COACH = os.path.join(CSGO, "coach")   # scenarios/, results.jsonl, live.json (the plugin's heartbeat)
 SCEN = os.path.join(COACH, "scenarios")
-PORT = 27015
-STATE_F = os.path.join(config.OUT, "train.json")
+# 23/10, the user: "lancer en parallèle le jeu et les tests ... pendant que Ancient, Vertigo ... se font analyser": a second
+# server beside the first (COACH_CS2SERVER its folder, COACH_CS2PORT its port), its own state; the app's is 27015
+PORT = int(os.environ.get("COACH_CS2PORT") or 27015)
+STATE_F = os.path.join(config.OUT, "train.json" if PORT == 27015 else f"train_{PORT}.json")
 STEP = 2   # one position every 2 ticks (32 a second); the plugin interpolates
 BEFORE, AFTER, CLUTCH = 7, 6, 35   # seconds of a death situation before and after it; length of a clutch
 NO_WINDOW = config.NO_WINDOW   # CREATE_NO_WINDOW on Windows, 0 elsewhere (Linux: no creationflags)
@@ -70,7 +72,77 @@ PREBUILT = os.path.join(config.OUT, "scenarios")
 
 
 def _has_demo(mid):
-    return os.path.exists(os.path.join(config.CACHE, f"{mid}.dem"))
+    return config.has_demo(mid)
+
+
+def clutch_time_ok(sc_id):
+    """A clutch with the bomb down for you to defuse, with the time it takes (02/11 17:20, the user: "garde les clutchs qui ont
+    plus de marges temporelles en prenant en compte le temps de defuse si j'ai un kit ou pas plus le temps d'aller tuer les
+    joueurs en prenant en compte le temps de déplacement"; round 16: 7 of them lost to the bomb): the bomb's time at its
+    start (or till its plant, then 40 s) against your way to it on the mesh at 220 u/s, its defuse (5 s with a kit, 10
+    without) and 5 s for each of them still up once you are alone, 5 s more. -> False when it cannot be made; True otherwise, or when its
+    scenario is not built yet."""
+    f = os.path.join(SCEN, f"{sc_id}.json")
+    if not os.path.exists(f):
+        try:
+            mid, rest = str(sc_id).split("_r", 1)
+            rnd, k = rest.split("_", 1)
+            f = _prebuilt(mid, rnd, "clutch" if k.startswith("c") else "death") or ""
+        except ValueError:
+            return True
+    try:
+        sc = json.load(open(f, encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    b = sc.get("bomb") or {}
+    me = next((p for p in sc.get("players") or [] if p.get("me")), None)
+    if not b.get("pos") or not me or me.get("team") != 3 or len(me.get("path") or []) < 3:
+        return True
+    fps = float(sc.get("rate") or 64) / float(sc.get("step") or 2)
+    avail = float(b.get("f") or 0) / fps + float(b.get("left") or 40.0)
+    start = list(me["path"][:3])
+    dist = None
+    try:
+        from wily.training import navmesh
+        r = navmesh.route(sc.get("map"), start, list(b["pos"]))
+        if r:
+            dist = sum(math.dist(r[i][:2], r[i + 1][:2]) for i in range(len(r) - 1))
+    except Exception:
+        dist = None
+    if dist is None:
+        dist = 1.3 * math.dist(start[:2], b["pos"][:2])
+    # the ones still up once you are alone (your last teammate down): 5 s each to find and kill, 5 s more of margin (his
+    # "plus de marges temporelles"; at 3 s and 2 s Fachwerk's R24 passed, 26.6 s for 22.9, lost twice to the bomb)
+    # (a death frame of -1: alive to the end)
+    mates = [p.get("death") for p in sc.get("players") or [] if p.get("team") == me.get("team") and not p.get("me")]
+    alone = max(mates) if mates and all(isinstance(d, (int, float)) and d > 0 for d in mates) else 0
+    foes = sum(1 for p in sc.get("players") or []
+               if p.get("team") not in (None, me.get("team")) and (p.get("death") is None or p.get("death") < 0 or p.get("death") > alone))
+    need = dist / 220.0 + (5.0 if me.get("kit") else 10.0) + 5.0 * foes + 5.0
+    return avail >= need
+
+
+PASSIVE_SINCE = 1793637000   # 02/11 17:30: the bots come and duel you from then (CoachReplay.cs); older ones not counted
+
+
+def passive_withdrawn():
+    """The situations that end with nobody killed twice of their last three plays since the bots come for you (02/11 17:20,
+    the user: "fait en sorte que les bots viennent jouer des duels contre moi ou alors enlève cette drill"): their ids."""
+    last = {}
+    try:
+        with open(os.path.join(COACH, "results.jsonl"), encoding="utf-8") as fh:
+            for line in fh:
+                if '"situation"' not in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("kind") == "situation" and (r.get("t") or 0) >= PASSIVE_SINCE:
+                    last.setdefault(r.get("drill"), []).append(r.get("outcome"))
+    except OSError:
+        return set()
+    return {d for d, o in last.items() if sum(1 for x in o[-3:] if x == "passive") >= 2}
 
 
 def _prebuilt(mid, rnd, kind):
@@ -78,25 +150,54 @@ def _prebuilt(mid, rnd, kind):
     return f if os.path.exists(f) else None
 
 
+_OWN = {}
+
+
 def _own_matches(sid, n=15):
+    """Your last matches with their demo: [(match, map)]. Kept while your matches folder is the same, a minute at most
+    (22/10: a session's build read your 124 stats.json twice, on the hard disk)."""
     md = os.path.join(config.player_dir(sid), "matches")
-    out = []
-    for mid in os.listdir(md) if os.path.isdir(md) else []:
-        deep = os.path.join(config.OUT, "deep", mid)
-        if (_has_demo(mid) or os.path.isdir(os.path.join(PREBUILT, mid))) and os.path.exists(os.path.join(deep, "duels.parquet")):
-            try:
-                st = json.load(open(os.path.join(md, mid, "stats.json"), encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            out.append((mid, st.get("map")))
-    return sorted(out, key=lambda x: int(x[0]), reverse=True)[:n]
+    try:
+        names = tuple(sorted(os.listdir(md))) if os.path.isdir(md) else ()
+    except OSError:
+        names = ()
+    hit = _OWN.get(str(sid))
+    if not hit or hit[1] != names or time.time() - hit[0] > 60:
+        out = []
+        for mid in names:
+            deep = os.path.join(config.OUT, "deep", mid)
+            if (_has_demo(mid) or os.path.isdir(os.path.join(PREBUILT, mid))) and os.path.exists(os.path.join(deep, "duels.parquet")):
+                try:
+                    st = json.load(open(os.path.join(md, mid, "stats.json"), encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                out.append((mid, st.get("map")))
+        hit = _OWN[str(sid)] = (time.time(), names, sorted(out, key=lambda x: int(x[0]), reverse=True))
+    return list(hit[2][:n])
+
+
+# 29/10, the user: "élimine des situations qui n'ont rien à foutre là. Des duels longue distance alors que je suis au fusil à
+# pompe ... c'est littéralement des mauvais placements de base ... j'ai rien à faire là avec cette arme là": a death at a range
+# your weapon can't fight at is no duel to play again (a shotgun past 13 m, an SMG past 30 m: the duels' distance is in m);
+# kept apart for the coaching (where you stood with what)
+SHOTGUNS = {"Nova", "XM1014", "MAG-7", "Sawed-Off"}
+SMGS = {"MP9", "MAC-10", "MP7", "MP5-SD", "UMP-45", "P90", "PP-Bizon"}
+
+
+def misplaced(weapon, dist_m):
+    """Your weapon could not fight there: a shotgun past 13 m, an SMG past 30 m."""
+    try:
+        d = float(dist_m)
+    except (TypeError, ValueError):
+        return False
+    return (weapon in SHOTGUNS and d > 13) or (weapon in SMGS and d > 30)
 
 
 def scenarios(sid, n=15):
     """The situations worth playing again, the worst first: the 1v1 and 1v2 you lost, your opening deaths not traded in a
     lost round, then the rest (1v3, deaths with one of the three)."""
     sid = str(sid)
-    out = []
+    out, odd = [], []
     try:
         lost = set(json.load(open(LOST_F, encoding="utf-8")))
     except (OSError, ValueError):
@@ -110,6 +211,11 @@ def scenarios(sid, n=15):
         D["killer"], D["victim"] = D.killer.astype(str), D.victim.astype(str)
         for _, d in D[D.victim == sid].iterrows():
             r = int(d["round"])
+            mine = (me.primary.get(r) or me.pistol.get(r)) if r in me.index else None
+            if misplaced(mine, d.get("distance")):
+                odd.append({"mid": mid, "map": mp, "round": r, "t": round(float(d.t), 1), "zone": d.victim_zone, "weapon": mine,
+                            "distance_m": round(float(d.distance), 1), "by": d.killer_name, "their": d.weapon})
+                continue
             won = bool(me.won.get(r)) if r in me.index else None
             score = (2 if won is False else 0) + (1 if not d.get("traded") else 0) + (1 if d.get("opening") else 0)
             out.append({"id": f"{mid}_r{r}_d", "mid": mid, "map": mp, "round": r, "kind": "death", "t": round(float(d.t), 1),
@@ -137,6 +243,11 @@ def scenarios(sid, n=15):
             out.append({"id": f"{mid}_r{int(r)}_c", "mid": mid, "map": mp, "round": int(r), "kind": "clutch",
                         "t": round(float(last.t), 1), "side": side, "zone": last.victim_zone, "vs": foes,
                         "mine": me.primary.get(r) or me.pistol.get(r), "won": False, "score": {1: 5, 2: 4}.get(foes, 3)})
+    if odd:   # the deaths with the wrong weapon for the range: for the coaching, not to replay
+        try:
+            config.write_json(os.path.join(config.player_dir(sid), "misplaced.json"), odd)
+        except OSError:
+            pass
     # a match without its demo (the player's history): only the situations built on the coach's PC
     out = [s for s in out if (_has_demo(s["mid"]) or _prebuilt(s["mid"], s["round"], s["kind"])) and s["id"] not in lost]
     return sorted(out, key=lambda s: (-s["score"], -int(s["mid"]), s["round"]))
@@ -200,7 +311,7 @@ def _build(sid, mid, rnd, kind="death", t=None):
     else:
         key = int(Dr[Dr.victim == sid].tick.iloc[0])
         start, end = max(t0, key - BEFORE * 64), min(t_end, key + AFTER * 64)
-    p = DemoParser(os.path.join(config.CACHE, f"{mid}.dem"))
+    p = DemoParser(config.demo(mid))
     # start when no enemy is close: the latest moment 5 to 20 s before (a clutch: 1 to 12 s before it starts), with all of
     # them 1,100 u away (06/10, a clutch started face to face with its enemy: "je viens d'ici à la base, je ne peux pas
     # me retrouver face à face")
@@ -254,6 +365,12 @@ def _build(sid, mid, rnd, kind="death", t=None):
         alive = g.is_alive.to_numpy()
         death = next((i for i in range(len(alive)) if not alive[i]), -1)
         k = g if death < 0 else g.iloc[:death]
+        # the round's end tick can be the next round's start: everyone back on a spawn, thousands of units in one step
+        # (17/10, the self-test: 41 of 2,258 ways ended so, their bots put back across the map): cut there
+        jump = np.nonzero(np.hypot(np.diff(k.X.to_numpy(float)), np.diff(k.Y.to_numpy(float))) > 200)[0]
+        if len(jump):
+            k = k.iloc[:int(jump[0]) + 1]
+            death = death if 0 <= death < len(k) else -1
         path = []
         for x, y, z, yw, pt in zip(k.X, k.Y, k.Z, k.yaw, k.pitch):
             path += [round(float(x), 1), round(float(y), 1), round(float(z), 1), round(float(yw), 1), round(float(pt), 1)]
@@ -475,7 +592,10 @@ def _password():
     return s["rcon"]
 
 
-def rcon(cmd, timeout=3.0):
+def rcon(cmd, timeout=3.0, wait=0.6):
+    """A console command on the training server -> its answer. wait: how long its answer is read for (the protocol says
+    nothing of its end: the read runs out). 30/10: 0.66 s each; a command whose answer nobody reads (the plugin's file
+    asks: css_dbglosfile) passes wait=0.02."""
     s = socket.create_connection(("127.0.0.1", PORT), timeout=timeout)
 
     def send(i, t, body):
@@ -507,7 +627,7 @@ def rcon(cmd, timeout=3.0):
                 break
         send(2, 2, cmd)
         out = []
-        s.settimeout(0.6)
+        s.settimeout(wait)
         try:
             while True:
                 out.append(recv()[2])
@@ -527,8 +647,10 @@ def _pid_alive(pid):
             return config.is_cs2(psutil.Process(int(pid)).name())
         except (psutil.Error, ValueError):
             return False
-    r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True, creationflags=NO_WINDOW)
-    return "cs2.exe" in r.stdout
+    # errors replaced: tasklist writes in the console's code page ("Aucune tâche ..."), which a UTF-8 Python (python -X utf8)
+    # cannot decode: its output came back None and the start of a server that was up failed (23/10)
+    r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True, errors="replace", creationflags=NO_WINDOW)
+    return "cs2.exe" in (r.stdout or "")
 
 
 def installed():
@@ -577,6 +699,19 @@ def status():
             "humans": h.get("humans", 0), "scenario": h.get("scenario"), "state": h.get("state"),
             "session": {k: h.get(k) for k in ("session", "block", "drill", "points", "ok", "done", "streak", "left")} if h.get("session") else None,
             "connect": f"connect 127.0.0.1:{PORT}", "join": dict(JOIN)}
+
+
+def steps_live(fresh=2.0):
+    """A step-by-step drill's four toggles as the plugin wrote them (coach/steps_live.json, 16 times a second; 23/10, the
+    user: "afficher les 4 indicateurs du pas à pas aussi dans la page Live"); {} when none is being played now."""
+    f = os.path.join(COACH, "steps_live.json")
+    try:
+        if time.time() - os.path.getmtime(f) > fresh:
+            return {}
+        with open(f, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
 
 
 def _update():
@@ -751,6 +886,33 @@ def _linux_pid(pr, secs=30):
     return pr.pid
 
 
+def _kill_port_servers():
+    """A dedicated server of this training server's own folder still on its port, whatever its RCON password, stopped
+    before another starts (31/10, the battery: the server's state had another password than the one still running, it was
+    not taken over, a second one started on 27015, both half alive, sessions with no drill). Never the player's own game
+    (no -dedicated), never another folder's server."""
+    try:
+        import psutil
+    except ImportError:
+        return
+    exe = os.path.normcase(os.path.abspath(EXE))
+    for p in psutil.process_iter(["name", "cmdline", "exe"]):
+        try:
+            cmd = p.info.get("cmdline") or []
+            if not cmd or "-dedicated" not in cmd:
+                continue
+            if os.path.normcase(os.path.abspath(cmd[0])) != exe:
+                continue
+            port = cmd[cmd.index("-port") + 1] if "-port" in cmd and cmd.index("-port") + 1 < len(cmd) else "27015"
+            if str(port) != str(PORT):
+                continue
+            print(f"training server: an old one still on port {PORT} (pid {p.pid}), stopped first", flush=True)
+            p.kill()
+            p.wait(10)
+        except (psutil.Error, ValueError):
+            continue
+
+
 def _running_pid():
     """A training server of this app's own already up on this PC, whose pid it does not have: the app was restarted, or
     an older one left it behind (before 13/10 its pid was its launcher's on Linux, so stop() never reached it). Taken
@@ -788,6 +950,7 @@ def _above_normal(pid):
         p = psutil.Process(pid)
         if p.nice() != psutil.ABOVE_NORMAL_PRIORITY_CLASS:
             p.nice(psutil.ABOVE_NORMAL_PRIORITY_CLASS)
+        config.full_speed(pid)   # hidden, Windows 11 would run it slow and ignore its timer (16/10)
         for c in p.children(recursive=True):
             if c.name().lower() == "conhost.exe" and c.nice() != psutil.HIGH_PRIORITY_CLASS:
                 c.nice(psutil.HIGH_PRIORITY_CLASS)
@@ -911,8 +1074,28 @@ def _answers():
         return False
 
 
+# touched while the server loads a map (17/10: three starts past 120 s while the demo copies to Drive read the same
+# disk): tools/archive_demos.py waits meanwhile
+LOADING = os.path.join(config.OUT, "training_loading" if PORT == 27015 else f"training_loading_{PORT}")
+
+
 def start(mp):
     """The server on this map (started hidden, or its map changed); back when it answers."""
+    try:
+        with open(LOADING, "w", encoding="utf-8") as f:
+            f.write(mp)
+    except OSError:
+        pass
+    try:
+        return _start(mp)
+    finally:
+        try:
+            os.remove(LOADING)
+        except OSError:
+            pass
+
+
+def _start(mp):
     if not config.linux_training():
         raise RuntimeError(i18n.tr(EXPERIMENTAL))
     if not installed():
@@ -953,6 +1136,12 @@ def start(mp):
                 _wait_map(mp)
         return status()
     _update()
+    _kill_port_servers()   # never a second one on its port
+    log = os.path.join(CSGO, "addons", "metamod", "console.log")   # -condebug's, written again at each start: the last
+    try:                                                          # run's kept (23/10: a server gone with no dump, its
+        shutil.copy2(log, log[:-4] + ".prev.log")                 # words lost to the next start)
+    except OSError:
+        pass
     args = [EXE, "-dedicated", "-usercon", "-ip", "127.0.0.1", "-port", str(PORT), "-condebug", "-nohltv",
             "+sv_lan", "1", "+rcon_password", _password(), "+game_type", "0", "+game_mode", "1",
             "+map", WORKSHOP_BASE if wid else mp]   # a Workshop map only once the server runs: given at launch it is ignored (07/10)
@@ -1021,6 +1210,15 @@ def stop():
     s.pop("pid", None)
     _save_state(s)
     return status()
+
+
+def keep():
+    """Used with nobody on it (tools/train_selftest.py plays its sessions alone): the idle stop below waits. 17/10: it
+    stopped the self-test's server every 20 minutes, in the middle of a drill or of a map change (76 crash dumps since
+    03/10, all its quit: CounterStrikeSharp's exit after the engine's)."""
+    s = _state()
+    s["seen"] = time.time()
+    _save_state(s)
 
 
 def idle_check(after=20 * 60):
