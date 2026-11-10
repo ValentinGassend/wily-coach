@@ -1205,8 +1205,10 @@ SHOTGUNS, SHOTGUN_REACH = ("MAG-7", "XM1014", "Nova", "Sawed-Off"), 450.0
 # a shotgun's post only where a corner of its zone sees the attackers' ways within this (03/11, round 19: passed at 307 u
 # and under, Nuke's A and B; failed every time from 345 u, five maps; round 20 with 310: Overpass's Construction (301 u)
 # and Mirage's A (291 and 303 u) 1 wave of 6, 5 deaths each, Nuke's 275 u had held 5 of 6): tools/close_check.py,
-# resources/close_checked.json
-CLOSE_CAP = 280.0
+# resources/close_checked.json. 10/11, rounds 26-28 with the bots aiming by the plugin's hand: Ancient's posts at 230 and
+# 245 u passed (B 6 waves of 6 with no death, A 4 of 6), Nuke's at 272 and 279 u failed at each first try (2-3 of 6), the
+# MAG-7 shot dead by AKs at 227-297 u, 2 of its 4 deaths by a headshot, before it could reach them
+CLOSE_CAP = 250.0
 
 
 def _close_ok(mp, post):
