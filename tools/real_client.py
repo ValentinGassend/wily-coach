@@ -1656,7 +1656,9 @@ def head_of(b, lead=0.0):
 VIEW_LAG = 0.2
 # a shotgun's lead, times LEAD (03/11: 1.5; 04/11, rounds 23-24: its misses on crossers then 45 ahead of them, 1 behind,
 # 37 u at the median, at 1.0 27 behind and 12 ahead: the bots' strafes turn back, no lead fits; on still ones 10 hits of 10)
-PUMP_LEAD = 1.0
+# 10/11: at 1.0 all 63 of its blasts at crossers (80+ u/s, rounds 23-26) went 7-38 u ahead of them, 21 u at the median, none
+# behind (the plugin's impacts): its lead cut to under a third
+PUMP_LEAD = 0.3
 SHOT_LAG = 0.13   # the settle before a shot only (30/10, his order: his 0.3 s, a first damage in 0.4-0.5 s; 0.2 held its first shot 0.36 s at the median)
 PRESS_R8 = 0.33   # the R8's left click held till its hammer falls (29/10)
 
@@ -1923,6 +1925,13 @@ def scope_up(timeout=0.9):
     clicked only when the server says it is down, checked again, steady 0.35 s once up. -> True when up."""
     t0, clicked = time.time(), 0.0
     foes()
+    # its bolt first, no click in it (10/11: fight() comes back 0.2 s after an AWP's shot, its bolt spent out of their sight;
+    # a click in the bolt is lost, one as the game zooms back in by itself takes the scope off): then the game's own zoom
+    if (LIVE.get("me_ready") or 0) > 0.02:
+        gun_ready(timeout=1.6)
+        time.sleep(0.15)
+        foes()
+        t0 = time.time()
     # up and steady already (02/11, round 16, Fachwerk's AWP: held scoped, 0.35 s more before each shot, "in 0.35 s" every
     # time, the bots' whole reaction): at once
     if LIFE.get("scoped") and time.time() - LIFE.get("scoped_at", time.time()) >= 0.35:
@@ -2147,6 +2156,10 @@ def fight(sniper=False, timeout=6.0, reach=None, pump=None, far_switch=False):
         if not b:
             break
         hp0 = b.get("hp", 100)
+        # one hit from down (40 hp or less: any bullet kills it; a helmet's headshot leaves 11-13): no rest for the weapon's
+        # accuracy, two bullets at its chest at once (10/11, rounds 24-26: 17 of 54 deaths in rifle duels came with the bot at
+        # 40 hp or less, the next shot 0.58-0.77 s after the one that hurt it)
+        finish = not sniper and not pump and not revolver() and not semi_auto() and isinstance(hp0, (int, float)) and hp0 <= 40
         # crossing fast: the crosshair kept on it, the shot when it slows (27/10, labs on Inferno's Banana and Cache:
         # shots at ones crossing at 60+ u/s never hit, at any lead from -0.45 to +0.2, 0 of 71; still ones 36-68 %;
         # bots stop to fight), a second of that at most
@@ -2167,7 +2180,7 @@ def fight(sniper=False, timeout=6.0, reach=None, pump=None, far_switch=False):
             p = livepos() or p   # the plugin's word (02/11: the console's getpos, 0.1-0.5 s before each AWP shot)
             b = next((x for x in foes() if x["slot"] == b["slot"]), b)   # where it is now, after the scope
         slot = b["slot"]
-        drop = 14 if sniper else 8 if pump else 0   # an AWP: its chest (a body shot kills, twice the mark far off); a
+        drop = 14 if sniper else 8 if pump else 10 if finish else 0   # an AWP: its chest (a body shot kills, twice the mark far off); a
         # shotgun: its neck, the pellets' cloud over head and chest (26/10, Boulder's MAG-7)
 
         # a shotgun leads them more (03/11, rounds 20-21: its misses on movers 27 behind them, 12 ahead, at 170 u and 150 u/s
@@ -2199,7 +2212,7 @@ def fight(sniper=False, timeout=6.0, reach=None, pump=None, far_switch=False):
         # its blast on their stop at every distance (04/11, rounds 23-24: every MAG-7 blast at one standing hit, 10 of 10, at
         # movers 19 %; the bots stop to shoot); a rifle's too past 600 u (04/11, rounds 23-25: its hits there on still ones
         # 54 %, on slow ones 25 %, on runners 13 % of 344 shots)
-        if pump or sniper or (p and math.dist(p[:2], b["pos"][:2]) > 600):
+        if (pump or sniper or (p and math.dist(p[:2], b["pos"][:2]) > 600)) and not finish:
             # one big shot timed on its stop, as a player waits for the other's counter-strafe (02/11, round 16, Mirage's
             # MAG-7: its blasts 12-78 u off strafers at 120-250 u, either side; the bots slow to a fifth to shoot): 0.25 s
             # at most, the crosshair on it meanwhile
@@ -2226,7 +2239,13 @@ def fight(sniper=False, timeout=6.0, reach=None, pump=None, far_switch=False):
         t_shot = LIVE.get("t") or 0
         near = p is not None and math.dist(p[:2], b["pos"][:2]) < 600 and not sniper and not pump and not revolver()
         t_fire = time.time()   # the click itself (30/10: the log timed the shot after the pump's 0.85 s, 1.1-1.7 s "after its line")
-        if near and semi_auto():
+        if finish and not near:   # far off: two bullets (0.09 s a bullet for an M4), then at it again (10/11); close in, the
+            # burst below, on its chest
+            send("+attack")
+            time.sleep(0.16)
+            send("-attack")
+            time.sleep(0.12)
+        elif near and semi_auto():
             # a pistol close: one bullet a click, then the crosshair back on it, its kick let go, not pulled (03/11, round
             # 19: the burst's 0.45 s pull after its one bullet left the view under it; the next tap with no settle went with
             # it: the P2000's 16.6 u under the head at the median, 37-45 u in the legs at 590 u, the Glock 10, the Tec-9 11)
@@ -2250,6 +2269,8 @@ def fight(sniper=False, timeout=6.0, reach=None, pump=None, far_switch=False):
                     hh = point()
                     if hh is None:
                         break
+                    if finish and b.get("los") != "body":   # one hit from down: its chest, the bigger mark (10/11)
+                        hh = [hh[0], hh[1], hh[2] - 10]
                     yw = math.degrees(math.atan2(hh[1] - p[1], hh[0] - p[0]))
                     pt = -math.degrees(math.atan2(hh[2] - p[2], math.hypot(hh[0] - p[0], hh[1] - p[1])))
                     (rpp, rpy), _ = recoil()
@@ -2269,7 +2290,23 @@ def fight(sniper=False, timeout=6.0, reach=None, pump=None, far_switch=False):
             # the weapon's accuracy back before the next tap: far off, a 0.25 s rest left the bullets 8 u around the head
             # at 850 u (26/10, Boulder's pistols)
             # a pump shotgun fires once in 0.85 s: a click before that is lost (26/10: "no impact" every other shot)
-            time.sleep(1.5 if sniper else pump if pump else 0.4 if far else 0.25)   # an AWP's bolt: 1.46 s
+            # an AWP: its shot's outcome read, its bolt (1.46 s) left to the caller, spent out of their sight (10/11, rounds 23-26:
+            # 44 of its 83 deaths with the AWP came within 1.5 s of its own shot, standing in their sight through the bolt)
+            rest = 0.2 if sniper else pump if pump else 0.4 if far else 0.25
+            if sniper or pump or revolver():
+                time.sleep(rest)
+            else:
+                # its rest cut short once the tap left it one hit from down, or down (10/11, Inferno's rifles in round 26: hit
+                # to 11-13 hp, the next tap 0.45 s on, dead meanwhile): at it again at once (finish), 0.08 s for the hit to show
+                t_r = time.time()
+                while time.time() - t_r < rest:
+                    time.sleep(0.02)
+                    if time.time() - t_r < 0.08:
+                        continue
+                    nb = next((x for x in foes() if x["slot"] == b["slot"]), None)
+                    hp1 = nb.get("hp") if nb is not None else None
+                    if nb is None or (isinstance(hp1, (int, float)) and isinstance(hp0, (int, float)) and hp1 <= 40 and hp1 < hp0):
+                        break
         cur = next((x for x in foes() if x["slot"] == b["slot"]), None)
         # its bullets' height on it corrected shot by shot, as a player sees his go low (02/11, round 15, Anubis's Canals boost:
         # 15 Glock bullets 25-28 u under the head at 531 u, one after the other): 0.7 of the miss, 40 u at most, 10 s
@@ -2319,6 +2356,11 @@ def fight(sniper=False, timeout=6.0, reach=None, pump=None, far_switch=False):
                   + f"(in {t_in - FIRST.get(b['slot'], t_in):.2f}, stop {t_st - t_in:.2f}, settle {t_se - t_st:.2f}), scoped {sc_before} as it left, "
                   f"you at {math.hypot(v_me[0], v_me[1]):.0f} u/s {v_me[2]:+.0f} up{'' if gnd in (None, True) else ' OFF THE GROUND'}, "
                   f"hp {hp0} -> {cur.get('hp') if cur else 'down'}, you {'alive' if LIFE.get('alive', True) else 'DOWN'}{lost}", flush=True)
+        if sniper:   # one shot a call (10/11): the next one waits for its bolt anyway (gun_ready), the caller hides meanwhile
+            if cur is None:
+                down += 1
+                MISS.pop(b["slot"], None)
+            break
         if cur is None:
             down += 1
             MISS.pop(b["slot"], None)
