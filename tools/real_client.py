@@ -1793,7 +1793,7 @@ def recoil():
 # missed by before, as a hand learns a pattern (degrees: the recoil is an angle, the same at any range); a transfer's flick
 # (over 6 deg) not learnt from
 SPRAY_TABLE = os.path.join(HERE, "out", "realtest", "spray_table.json")
-SPRAY_GAIN, SPRAY_MAX, SPRAY_OUTLIER = 0.25, 4.0, 9.0   # 30/10 23:58: at 0.35/4.0/6.0 bullets 5-7 sat at +4 deg (the transfer's misses learnt); 31/10 02:40: the first target's bullets only now, its 4th-8th 3-8 deg high at 500 u were all cut as outliers at 4
+SPRAY_GAIN, SPRAY_MAX, SPRAY_OUTLIER = 0.1, 4.0, 9.0   # 10/11: 0.25 ran the AK's row off to the caps (294 sprays, bullets 8-30 at +-4 deg, alternating; Train's T Main 3-7 hits of 30), its row reset; 30/10 23:58: at 0.35/4.0/6.0 bullets 5-7 sat at +4 deg (the transfer's misses learnt); 31/10 02:40: the first target's bullets only now, its 4th-8th 3-8 deg high at 500 u were all cut as outliers at 4
 
 
 def _spray_table():
@@ -1818,7 +1818,7 @@ def _spray_learn(weapon, imp):
         if x[1] != first:
             break
         d_ = x[4] or 0
-        if d_ < 50:
+        if d_ < 50 or x[5]:   # a bullet a wall stopped: not learnt (10/11, a hidden one's or a flip's, not the pattern's)
             continue
         ep, ey = math.degrees(math.atan2(float(x[3]), d_)), math.degrees(math.atan2(float(x[2]), d_))
         if abs(ep) > SPRAY_OUTLIER or abs(ey) > SPRAY_OUTLIER:
