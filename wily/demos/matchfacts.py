@@ -45,7 +45,7 @@ def fdir(sid):
 
 def analyze(mid, sid):
     sid = int(sid)
-    dem = os.path.join(config.CACHE, f"{mid}.dem")
+    dem = config.demo(mid)
     d = os.path.join(config.DEEP, str(mid))
     if not (os.path.exists(dem) and os.path.exists(os.path.join(d, "rounds.parquet")) and os.path.exists(os.path.join(d, "samples.parquet"))):
         return None
@@ -352,7 +352,7 @@ def run(sid, n=10, only_missing=True):
     for mid in ms:
         if done >= n:
             break
-        if not os.path.exists(os.path.join(config.CACHE, f"{mid}.dem")):
+        if not config.has_demo(mid):
             continue
         done += 1
         if only_missing and os.path.exists(os.path.join(fdir(sid), f"{mid}.json")):

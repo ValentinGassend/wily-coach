@@ -18,7 +18,7 @@ import pandas as pd
 from wily.core import config
 from wily.coaching import knowledge as K
 from wily.demos.map_analysis import humanize
-from wily.core.i18n import N_, tr, trn, tr_static
+from wily.core.i18n import N_, num, tr, trn, tr_static
 
 # the zone groups' names (R.group()): English while the plan is built, translated where it is saved
 _GROUPS = [N_("A site"), N_("B site"), N_("Mid"), N_("A approach (T side)"), N_("B approach (T side)"), N_("CT side / rotations"), N_("Spawns")]
@@ -52,7 +52,8 @@ def _n_demos():
     """The base's demos (counted once a minute: a plan build asked 511 times)."""
     import time
     if time.time() - _N[0] > 60:
-        _N[0], _N[1] = time.time(), sum(1 for m in os.listdir(config.DEEP) if os.path.exists(os.path.join(config.DEEP, m, "rounds.parquet")))
+        from wily.core import ledger
+        _N[0], _N[1] = time.time(), sum(1 for f in ledger.match_facts().values() if f.get("rounds"))   # no file checked one by one
     return _N[1]
 
 
@@ -196,7 +197,7 @@ def igl(M):
         if bonus > 0:
             why.append(tr("{role} profile: often in the back, sees the round unfold", role=tr(art)))
         if hours >= 1500:
-            why.append(tr("{n} h played", n=f"{hours:,}"))
+            why.append(tr("{n} h played", n=num(hours)))
         res.append({"steamid": m["steamid"], "name": m["name"], "score": round(score), "why": why})
     res.sort(key=lambda x: -x["score"])
     return res
@@ -912,28 +913,34 @@ def build(ids, owner=None):
     return plan
 
 
+_NONE = object()
+
+
 def suggestions(sid, limit=8):
     """Likely teammates of a player: partners seen in their team, then players met most often."""
     sid = int(sid)
     cnt, names = defaultdict(int), {}
+    from wily.app import pipeline
+    from wily.coaching import context
+    his = set(pipeline.player_matches(sid))   # 15/10: his matches only (every match's positions were read)
+    dg = context.digest(sid, his)   # 16/10: the first round's players of each match kept (context.digest)
     for mid in os.listdir(config.DEEP):
-        f = os.path.join(config.DEEP, mid, "samples.parquet")
-        if not os.path.exists(f):
+        if mid not in his or mid not in dg:
             continue
-        try:   # their in-game name too: a teammate not analyzed here is shown by name, not by SteamID (05/10, the beta)
-            s = pd.read_parquet(f, columns=["steamid", "name", "side", "round"])
-        except Exception:   # an older extraction without the names
-            s = pd.read_parquet(f, columns=["steamid", "side", "round"])
-        r1 = s[s["round"] == s["round"].min()].drop_duplicates("steamid").set_index("steamid")
-        if sid not in r1.index:
+        r1 = dg[mid]["first"]   # their in-game name too: a teammate not analyzed here is shown by name (05/10, the beta)
+        mine = next((sd for p, sd, _ in r1 if p == sid), _NONE)
+        if mine is _NONE:
             continue
-        for p, row in r1.iterrows():
-            if p != sid and row["side"] == r1.at[sid, "side"] and p:
-                cnt[int(p)] += 1
-                if isinstance(row.get("name"), str) and row["name"]:
-                    names[int(p)] = row["name"]
+        for p, sd, nm in r1:
+            if p != sid and sd == mine and p:
+                cnt[p] += 1
+                if nm:
+                    names[p] = nm
+    # 16/10: only the players who can be in the top (met at least as often as the limit-th one): the others were each
+    # given a name and a profile check for nothing (every player ever met, one file check each)
+    floor = sorted(cnt.values(), reverse=True)[limit - 1] if len(cnt) >= limit else 0
     rows = [{"steamid": str(p), "name": config.display_name(p, names.get(p)), "together": n,
-             "analyzed": os.path.exists(os.path.join(config.player_dir(p), "advice.json"))} for p, n in cnt.items()]
+             "analyzed": os.path.exists(os.path.join(config.player_dir(p), "advice.json"))} for p, n in cnt.items() if n >= floor]
     rows.sort(key=lambda r: (-r["together"], not r["analyzed"]))
     return rows[:limit]
 

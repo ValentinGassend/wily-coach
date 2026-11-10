@@ -62,8 +62,18 @@ def fresh(cached, stamp, slack=0.85):
 
 
 def _stamp():
+    """The base's grenade files: how many, the latest date (16/10: from the matches' facts, ledger.py; only the folders
+    without a meta.json, an extraction cut short, are checked one by one)."""
+    from wily.core import ledger
     n, latest = 0, 0.0
+    facts = ledger.match_facts() if os.path.exists(config.DEEP) else {}
+    for f in facts.values():
+        if f.get("grenades") is not None:
+            n += 1
+            latest = max(latest, f["grenades"])
     for mid in os.listdir(config.DEEP) if os.path.exists(config.DEEP) else []:
+        if mid in facts:
+            continue
         f = os.path.join(config.DEEP, mid, "grenades.parquet")
         if os.path.exists(f):
             n += 1
@@ -71,73 +81,101 @@ def _stamp():
     return f"v{VERSION}-{n}-{int(latest)}"
 
 
+def map_counts():
+    """{map: the base's matches with a grenade file} (its matches' facts, ledger.py)."""
+    from wily.core import ledger
+    c = Counter()
+    for m, f in (ledger.match_facts() if os.path.exists(config.DEEP) else {}).items():
+        if f.get("grenades") is not None and f.get("map") and not m.startswith("."):
+            c[f["map"]] += 1
+    return dict(c)
+
+
+def fresh_maps(cached, now, slack=0.85, least=3):
+    """No map grew by more than 15 % since (3 matches at least): the whole base's 15 % let a small map wait (22/10: the
+    table 11 days old, Fachwerk's 34 matches in it of its 44, the base grown by 5 % only)."""
+    if not isinstance(cached, dict):
+        return False
+    return all(n - cached.get(mp, 0) < least or cached.get(mp, 0) >= slack * n for mp, n in now.items())
+
+
 def load_all(rebuild=False):
-    """Every throw of the base (5v5 matchmaking demos), with the round's outcome, the side's buy and the bomb."""
+    """Every throw of the base (5v5 matchmaking demos), with the round's outcome, the side's buy and the bomb. Made
+    again when the base or one of its maps grew (fresh, fresh_maps), from a copy of each match's rows that reads only
+    the new or changed matches (22/10: ledger.gathered; it opened the 5,100 matches' four files each time)."""
+    from wily.core import ledger
     meta_f = OUT + ".json"
-    stamp = _stamp()
+    stamp, counts = _stamp(), map_counts()
     if not rebuild and os.path.exists(OUT) and os.path.exists(meta_f):
         try:
-            if fresh(json.load(open(meta_f, encoding="utf-8")).get("stamp"), stamp):
+            meta = json.load(open(meta_f, encoding="utf-8"))
+            if fresh(meta.get("stamp"), stamp) and fresh_maps(meta.get("maps"), counts):
                 cached = pd.read_parquet(OUT)
                 if "died" in cached and "land_Z" in cached:   # older files: built again once
                     return cached
         except ValueError:
             pass
-    rows = []
-    for mid in os.listdir(config.DEEP):
-        d = os.path.join(config.DEEP, mid)
-        f, fr = os.path.join(d, "grenades.parquet"), os.path.join(d, "rounds.parquet")
-        if not os.path.exists(f) or not os.path.exists(fr):
-            continue
-        R = pd.read_parquet(fr)
-        if not len(R) or R.T_n.max() < 4 or R.CT_n.max() < 4:  # wingman: other habits
-            continue
-        try:
-            mp = json.load(open(os.path.join(d, "meta.json"), encoding="utf-8")).get("map")
-        except (OSError, ValueError):
-            continue
-        if not mp or mp.startswith("cs_"):
-            continue
-        g = pd.read_parquet(f)
-        g = g[g.side.isin(["T", "CT"])] if len(g) else g
-        if not len(g):
-            continue
-        R = R.set_index("round")
-        plant = R["plant_t"] if "plant_t" in R else pd.Series(dtype=float)
-        # a pop flash: the thrower himself kills a blinded enemy in the 3 s after it pops
-        fd = os.path.join(d, "duels.parquet")
-        sk = [0] * len(g)
-        died = [0] * len(g)
-        if os.path.exists(fd):
-            DD = pd.read_parquet(fd, columns=["tick", "killer", "victim", "victim_flashed"])
-            if "land_tick" in g:
-                D = DD[DD.victim_flashed.fillna(False).astype(bool)]
-                byk = {k: np.sort(x.tick.to_numpy()) for k, x in D.groupby("killer")}
-                for i, (typ, thr, lt) in enumerate(zip(g.type, g.thrower, g.land_tick)):
-                    if typ == "flash" and lt == lt and thr in byk:
-                        a = byk[thr]
-                        sk[i] = int(np.searchsorted(a, lt + 3 * 64, side="right") - np.searchsorted(a, lt, side="right"))
-            # the thrower killed in the 4 s after his throw: a lineup thrown where the enemy sees you (09/10, his stuff
-            # drills: "et ici on peut me tuer", "la personne qui l'envoie peut mourir, parce que je la vois")
-            byv = {v: np.sort(x.tick.to_numpy()) for v, x in DD.groupby("victim")}
-            for i, (thr, tk) in enumerate(zip(g.thrower, g.tick)):
-                a = byv.get(thr)
-                if a is not None and tk == tk:
-                    died[i] = int(np.searchsorted(a, tk + 4 * 64, side="right") > np.searchsorted(a, tk, side="left"))
-        g = g.assign(self_kill=sk, died=died)
-        g = g.assign(map=mp, match=mid,
-                     post=[bool(pd.notna(plant.get(r)) and t > plant.get(r)) for r, t in zip(g["round"], g.t)],
-                     won=[R.winner.get(r) == s for r, s in zip(g["round"], g.side)],
-                     buy=[(R[f"{s}_buy"].get(r) if f"{s}_buy" in R else None) for r, s in zip(g["round"], g.side)])
-        for c in COLS:
-            if c not in g:
-                g[c] = None
-        rows.append(g[COLS])
-    df = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=COLS)
+    dirs = ledger.folders(config.DEEP)
+    items = [(mid, os.path.join(config.DEEP, mid, "grenades.parquet"), st) for mid, st in dirs.items() if not mid.startswith(".")]
+    df = ledger.gathered(f"nades_rows_v{VERSION}", items, prep=lambda g, mid: _match_rows(mid, g))
+    df = df.reindex(columns=COLS) if len(df) else pd.DataFrame(columns=COLS)
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     df.to_parquet(OUT)
-    json.dump({"stamp": stamp}, open(meta_f, "w", encoding="utf-8"))
+    json.dump({"stamp": stamp, "maps": counts}, open(meta_f, "w", encoding="utf-8"))
     return df
+
+
+def _match_rows(mid, g):
+    """One match's throws (g: its grenades.parquet) as the table has them; none for a wingman, a hostage map, a match
+    without its rounds."""
+    none = pd.DataFrame(columns=COLS)
+    d = os.path.join(config.DEEP, mid)
+    fr = os.path.join(d, "rounds.parquet")
+    if not os.path.exists(fr):
+        return none
+    R = pd.read_parquet(fr)
+    if not len(R) or R.T_n.max() < 4 or R.CT_n.max() < 4:  # wingman: other habits
+        return none
+    try:
+        mp = json.load(open(os.path.join(d, "meta.json"), encoding="utf-8")).get("map")
+    except (OSError, ValueError):
+        return none
+    if not mp or mp.startswith("cs_"):
+        return none
+    g = g[g.side.isin(["T", "CT"])] if len(g) else g
+    if not len(g):
+        return none
+    R = R.set_index("round")
+    plant = R["plant_t"] if "plant_t" in R else pd.Series(dtype=float)
+    # a pop flash: the thrower himself kills a blinded enemy in the 3 s after it pops
+    fd = os.path.join(d, "duels.parquet")
+    sk = [0] * len(g)
+    died = [0] * len(g)
+    if os.path.exists(fd):
+        DD = pd.read_parquet(fd, columns=["tick", "killer", "victim", "victim_flashed"])
+        if "land_tick" in g:
+            D = DD[DD.victim_flashed.fillna(False).astype(bool)]
+            byk = {k: np.sort(x.tick.to_numpy()) for k, x in D.groupby("killer")}
+            for i, (typ, thr, lt) in enumerate(zip(g.type, g.thrower, g.land_tick)):
+                if typ == "flash" and lt == lt and thr in byk:
+                    a = byk[thr]
+                    sk[i] = int(np.searchsorted(a, lt + 3 * 64, side="right") - np.searchsorted(a, lt, side="right"))
+        # the thrower killed in the 4 s after his throw: a lineup thrown where the enemy sees you (09/10, his stuff
+        # drills: "et ici on peut me tuer", "la personne qui l'envoie peut mourir, parce que je la vois")
+        byv = {v: np.sort(x.tick.to_numpy()) for v, x in DD.groupby("victim")}
+        for i, (thr, tk) in enumerate(zip(g.thrower, g.tick)):
+            a = byv.get(thr)
+            if a is not None and tk == tk:
+                died[i] = int(np.searchsorted(a, tk + 4 * 64, side="right") > np.searchsorted(a, tk, side="left"))
+    g = g.assign(self_kill=sk, died=died)
+    g = g.assign(map=mp, match=mid,
+                 post=[bool(pd.notna(plant.get(r)) and t > plant.get(r)) for r, t in zip(g["round"], g.t)],
+                 won=[R.winner.get(r) == s for r, s in zip(g["round"], g.side)],
+                 buy=[(R[f"{s}_buy"].get(r) if f"{s}_buy" in R else None) for r, s in zip(g["round"], g.side)])
+    for c in COLS:
+        if c not in g:
+            g[c] = None
+    return g[COLS]
 
 
 def _window(t, post):
@@ -425,11 +463,11 @@ def payoff():
 
 
 def summary(rebuild=False):
-    stamp = _stamp()
+    stamp, counts = _stamp(), map_counts()
     if not rebuild and os.path.exists(SUMMARY):
         try:
             cur = json.load(open(SUMMARY, encoding="utf-8"))
-            if fresh(cur.get("_stamp"), stamp):
+            if fresh(cur.get("_stamp"), stamp) and fresh_maps(cur.get("_maps"), counts):
                 return cur
         except ValueError:
             pass
@@ -438,7 +476,7 @@ def summary(rebuild=False):
     key = [(m, int(r)) for m, r in zip(df["match"], df["round"])]
     df = df.assign(tp=[t - PT[k][0] if p and k in PT and t == t else np.nan for k, t, p in zip(key, df["t"], df["post"])],
                    te=[PT[k][1] - PT[k][0] if p and k in PT else np.nan for k, p in zip(key, df["post"])])   # how long the round ran after the plant
-    res = {"_stamp": stamp, "maps": groups(df, _side_rounds()), "payoff": payoff(), "price": PRICE, "windows": WINDOW_FR}
+    res = {"_stamp": stamp, "_maps": counts, "maps": groups(df, _side_rounds()), "payoff": payoff(), "price": PRICE, "windows": WINDOW_FR}
     json.dump(res, open(SUMMARY, "w", encoding="utf-8"), ensure_ascii=False)
     return res
 

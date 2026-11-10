@@ -9,9 +9,9 @@ import sys
 
 import numpy as np
 import pandas as pd
-from demoparser2 import DemoParser
 
 from wily.core import mapdata
+from wily.demos import onepass
 from wily.demos.map_analysis import ZoneMap
 
 TICKRATE = 64
@@ -46,9 +46,18 @@ def sid(x):
         return 0
 
 
+# the events extract() reads, in one pass of the demo (onepass.py, 15/10)
+EVENTS = {"round_freeze_end": ((), ()), "round_officially_ended": ((), ()),
+          "player_death": (("X", "Y", "Z", "team_num", "last_place_name", "health"), ()),
+          "player_hurt": ((), ()), "player_blind": ((), ()),
+          "weapon_fire": (("X", "Y", "Z", "pitch", "yaw", "velocity_X", "velocity_Y", "velocity_Z", "is_airborne", "ducking",
+                           "is_walking", "team_num", "last_place_name"), ()),
+          **{ev: ((), ()) for ev in set(NADE_EVENTS.values())}}
+
+
 def extract(path, out):
     os.makedirs(out, exist_ok=True)
-    p = DemoParser(path)
+    p = onepass.Parser(path, EVENTS)
     map_name = p.parse_header()["map_name"]
     zm = ZoneMap(map_name)
     freeze = p.parse_event("round_freeze_end")["tick"].tolist()
@@ -257,6 +266,8 @@ def extract(path, out):
             "zone_mode": "manual" if zm.manual else "callouts",
             "levels": [{kk: vv for kk, vv in lv.items() if kk != "image_path"} for lv in zm.cfg["levels"]]}
     json.dump(meta, open(os.path.join(out, "meta.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    from wily.core import ledger
+    ledger.touch(out)   # extracted again in place: the steps after it see it (ledger.py)
     return len(duels), len(nades)
 
 

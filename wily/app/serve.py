@@ -45,6 +45,83 @@ def grow_alive():
 # page follows it until the end to say what it did, or why it failed
 PULL = {"running": False, "error": None}
 
+# 22/10, the coach: "rajoute un bouton pour ajouter les démos ... à l'analyse pour s'en servir aussi pour trouver des
+# stuffs": pro demos he downloaded himself (a match's GOTV Demo on HLTV, a LAN's archive), sent by Settings into this
+# inbox, analyzed into the pro base by fetch_demos --import --remove in a process of its own at idle priority (its
+# progress in out/pro/import_status.json), each copy deleted once in; one run at a time, a file sent meanwhile taken
+# by the next one
+PRO_INBOX = os.path.join(config.CACHE, "pro_inbox")
+PRO_STATUS = os.path.join(config.OUT, "pro", "import_status.json")
+PRO_EXTS = (".dem", ".rar", ".zip", ".7z")
+PRODEMOS = {"proc": None, "again": False, "lock": threading.Lock()}
+
+
+def prodemos_alive():
+    p = PRODEMOS["proc"]
+    if p is not None and p.poll() is None:
+        return True
+    pid = (config.read_json(PRO_STATUS, {}) or {}).get("pid")   # one started before the app's last start
+    try:
+        import psutil
+        return bool(pid) and config.runs(psutil.Process(pid).cmdline(), "wily.base.fetch_demos")
+    except Exception:
+        return False
+
+
+def prodemos_start():
+    """The inbox analyzed now, or by the next run when one is on it (its end starts it)."""
+    import subprocess
+    with PRODEMOS["lock"]:
+        if prodemos_alive():
+            PRODEMOS["again"] = True
+            if PRODEMOS["proc"] is None or PRODEMOS["proc"].poll() is not None:   # an older app's run: its end watched
+                threading.Thread(target=_prodemos_after, args=(None,), daemon=True).start()
+            return
+        os.makedirs(os.path.join(config.OUT, "logs"), exist_ok=True)
+        log = open(os.path.join(config.OUT, "logs", "prodemos.log"), "a", encoding="utf-8")
+        p = subprocess.Popen([sys.executable, "-m", "wily.base.fetch_demos", "--import", PRO_INBOX, "--remove"], cwd=config.HERE,
+                             stdout=log, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+                             creationflags=config.NO_WINDOW | getattr(subprocess, "IDLE_PRIORITY_CLASS", 0))
+        log.close()   # the child keeps its own copy of the handle
+        PRODEMOS.update(proc=p, again=False)
+    threading.Thread(target=_prodemos_after, args=(p,), daemon=True).start()
+
+
+def _prodemos_after(p):
+    if p is not None:
+        p.wait()
+    else:
+        while prodemos_alive():
+            time.sleep(10)
+    if PRODEMOS["again"]:
+        prodemos_start()
+
+
+def prodemos_files():
+    try:
+        return sorted(f for f in os.listdir(PRO_INBOX) if f.lower().endswith(PRO_EXTS) and os.path.isfile(os.path.join(PRO_INBOX, f)))
+    except OSError:
+        return []
+
+
+def prodemos_status():
+    """What Settings shows: the run (its file, its step), the files waiting, the last run's maps added or not, and how
+    many maps the pro base holds."""
+    st = config.read_json(PRO_STATUS, {}) or {}
+    reg = config.read_json(os.path.join(config.OUT, "pro", "matches.json"), {}) or {}
+    waiting = []
+    for f in prodemos_files():
+        try:
+            waiting.append({"name": f, "mb": round(os.path.getsize(os.path.join(PRO_INBOX, f)) / 2**20)})
+        except OSError:
+            pass
+    run = prodemos_alive()
+    p = PRODEMOS["proc"]
+    if run and p is not None and p.poll() is None and st.get("pid") != p.pid:   # the run starting: the last one's status
+        st = {}
+    return {"running": run, "waiting": waiting, "maps": sum(len(m.get("demos") or []) for m in reg.values()),
+            "last": {k: st.get(k) for k in ("started", "ended", "files", "file", "step", "why", "i", "n", "done", "failed", "added")} if st else {}}
+
 
 def grow_start():
     if grow_alive():
@@ -108,18 +185,34 @@ def grow_wait():
         time.sleep(2)
 
 
+def _stage(key, i=None, n=None, note=None):
+    """A step of the running analysis, for the page's progress: the step before it done when a new one starts."""
+    st, now = JOB.setdefault("steps", []), time.time()
+    if not st or st[-1]["key"] != key:
+        if st and not st[-1].get("t1"):
+            st[-1]["t1"] = now
+        st.append({"key": key, "t0": now})
+    s = st[-1]
+    s.update({k: v for k, v in (("i", i), ("n", n), ("note", note)) if v is not None})
+
+
 def run_job(query, task=None, extra=None):
     """One analysis at a time (search, or Steam history sync when task is given). The caller holds LOCK.
     extra: what the page shows at the end (the view and the match of a re-analysis)."""
     try:   # everything inside: the lock is released whatever happens
         JOB.update({"running": True, "log": [], "done": False, "error": None, "steamid": None, "query": query, "partial": None,
-                    "players": None, "view": None, "match": None, **(extra or {})})
+                    "players": None, "view": None, "match": None, "steps": [], "t0": time.time(), **(extra or {})})
         pipeline.LOG_HOOK = lambda m: JOB["log"].append(m)
+        pipeline.STAGE_HOOK = _stage
         pipeline.PARTIAL_HOOK = publish_partial
         grow_wait()
         res = task() if task else pipeline.run_for(query)
         ids = [p["steamid"] for p in res["match_players"]] if isinstance(res, dict) else [str(res)]
-        entries = {i: build_app.write_player(i) for i in ids}
+        _stage("page", 0, len(ids))
+        entries = {}
+        for k, i in enumerate(ids, 1):
+            entries[i] = build_app.write_player(i)
+            _stage("page", k, len(ids))
         idx = [x for x in load_index() if x["steamid"] not in entries] + [e for e in entries.values() if e]
         config.write_json(os.path.join(build_app.SITE, "index.json"), idx)
         if isinstance(res, dict):
@@ -135,8 +228,27 @@ def run_job(query, task=None, extra=None):
     finally:
         pipeline.LOG_HOOK = None
         pipeline.PARTIAL_HOOK = None
-        JOB.update(running=False, done=True)
+        pipeline.STAGE_HOOK = None
+        if JOB.get("steps") and not JOB["steps"][-1].get("t1"):
+            JOB["steps"][-1]["t1"] = time.time()
+        JOB.update(running=False, done=True, t1=time.time())
+        _times()
         LOCK.release()
+
+
+def _times():
+    """Each analysis's steps and how long each took, kept (16/10, the user: "encore beaucoup trop long, même sur le premier
+    match": the first one after the PC starts, its files not in memory yet, is the one to measure, and it was lost)."""
+    try:
+        d = os.path.join(config.OUT, "ledgers")
+        os.makedirs(d, exist_ok=True)
+        row = {"t0": round(JOB.get("t0") or 0), "s": round((JOB.get("t1") or 0) - (JOB.get("t0") or 0), 1), "query": str(JOB.get("query") or "")[:40],
+               "error": bool(JOB.get("error")), "steps": [[x["key"], round((x.get("t1") or 0) - x["t0"], 1), x.get("n")] for x in JOB.get("steps") or []],
+               "since_boot": round(time.time() - __import__("psutil").boot_time())}
+        with open(os.path.join(d, "job_times.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(row) + "\n")
+    except Exception:
+        pass
 
 
 def publish_partial(sid):
@@ -185,6 +297,15 @@ def load_index():
     return config.read_json(os.path.join(build_app.SITE, "index.json"), [])
 
 
+class _Server(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        """A page that left before its answer (a refresh, a closed tab: 22/10, his "erreur comme ça qui pète"): no
+        traceback for it; anything else, as before."""
+        if isinstance(sys.exc_info()[1], (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class Handler(BaseHTTPRequestHandler):
     def foreign(self, write=False):
         """True for a request coming from another site. Without this, a page you visit could start the microphone,
@@ -203,12 +324,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def send(self, code, body, ctype="application/json; charset=utf-8"):
         data = body if isinstance(body, bytes) else (body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            # the page left before its answer (22/10, his test video: Prepare refreshed while its first answer was made,
+            # "j'ai souvent une erreur comme ça qui pète"): nobody to answer, nothing wrong
+            self.close_connection = True
 
     def log_message(self, *a):
         pass
@@ -252,10 +378,6 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
-        if u.path == "/api/lineshots/status":
-            from wily.insights import lineshots
-            mp = (parse_qs(u.query).get("map") or [None])[0]
-            return self.send(200, lineshots.status(mp if mp and re.fullmatch(r"(de|cs|ar)_\w+", mp) else None))
         if u.path == "/api/voice/devices":
             try:
                 from wily.live import voice
@@ -299,6 +421,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/train/status":   # installed, installing, running (Prepare's warm-up asks before offering it)
             from wily.training import replay
             return self.send(200, replay.status())
+        if u.path == "/api/train/steps":   # a step-by-step drill's toggles, live (23/10: the Live page shows them too)
+            from wily.training import replay
+            return self.send(200, replay.steps_live())
         if u.path == "/api/train/preview":   # Prepare's warm-up before it's built: each part's minutes (06/10)
             from wily.training import train
             sid = (q.get("sid") or [""])[0] or str(config.settings().get("own_steamid") or "")
@@ -316,6 +441,20 @@ class Handler(BaseHTTPRequestHandler):
             if focus:   # each module's tile: what it has on that map
                 out["modules"] = train.modules(sid, where.split(",")[0])
             return self.send(200, out)
+        if u.path == "/api/train/execs":   # a Stuff focus block's choices on that map: its site takes and defenses (19/10)
+            from wily.training import execs
+            sid = (q.get("sid") or [""])[0] or str(config.settings().get("own_steamid") or "")
+            mp = (q.get("map") or [""])[0]
+            if not re.fullmatch(r"(?:de|cs|ar)_\w+", mp):
+                return self.send(400, {"error": "invalid map"})
+            return self.send(200, {"map": mp, "execs": execs.offer(sid, mp)})
+        if u.path == "/api/train/momentum":   # a Momentum focus block's choices on that map: its jumps, its ways (20/10)
+            from wily.training import train
+            sid = (q.get("sid") or [""])[0] or str(config.settings().get("own_steamid") or "")
+            mp = (q.get("map") or [""])[0]
+            if not re.fullmatch(r"(?:de|cs|ar)_\w+", mp):
+                return self.send(400, {"error": "invalid map"})
+            return self.send(200, {"map": mp, "choices": train.momentum_offer(sid, mp)})
         if u.path == "/api/train/modules":   # a focus block's tiles: each module's drills on that map (13/10)
             from wily.training import train
             sid = (q.get("sid") or [""])[0] or str(config.settings().get("own_steamid") or "")
@@ -365,6 +504,8 @@ class Handler(BaseHTTPRequestHandler):
                     print("replay:", e, flush=True)
             if f.startswith(os.path.normpath(build_app.SITE) + os.sep) and os.path.isfile(f):
                 return self.send(200, config._retry(lambda: open(f, "rb").read(), f))
+            if re.fullmatch(r"/nadecat/[a-z0-9_]+\.json", u.path):   # a map without a pros' grenade catalog yet (Fachwerk): none, said quietly (21/10: a 404 in the console)
+                return self.send(200, None)
             return self.send(404, {"error": "not found"})
         if u.path == "/api/match":   # an address /match/<match id or share code>
             m = match_info((q.get("code") or [""])[0].strip())
@@ -407,6 +548,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"started": True})
         if u.path == "/api/job":
             return self.send(200, JOB)
+        if u.path == "/api/prodemos":   # Settings' pro demos: the run, the files waiting, the last run's result (22/10)
+            return self.send(200, prodemos_status())
         if u.path == "/api/steam/status":
             from wily.matches import steamlink
             sid = (q.get("sid") or [""])[0] or str(config.settings().get("own_steamid") or config.logged_in_account()[0] or "")
@@ -442,17 +585,121 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def import_demo(self, u):
+        """One demo file sent by the page (16/10: FACEIT's .dem.zst, a .dem, .gz, .bz2, .xz, .zip): received in pieces
+        into the cache folder (a demo is 100 to 400 MB), unpacked, checked and listed with the matches."""
+        q = parse_qs(u.query)
+        name = (q.get("name") or ["demo.dem"])[0][:200]
+        try:
+            mtime = float((q.get("mtime") or ["0"])[0]) / 1000 or None
+        except ValueError:
+            mtime = None
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0 or n > 4 * 2**30:
+            return self.send(400, {"error": i18n.tr("The file is empty or too big.")})
+        os.makedirs(config.CACHE, exist_ok=True)
+        tmp = os.path.join(config.CACHE, f"_upload_{os.getpid()}_{threading.get_ident()}.part")
+        try:
+            with open(tmp, "wb") as f:
+                left = n
+                while left:
+                    b = self.rfile.read(min(left, 1 << 20))
+                    if not b:
+                        break
+                    f.write(b)
+                    left -= len(b)
+            if left:
+                return self.send(400, {"error": i18n.tr("The file did not arrive whole.")})
+            return self.send(200, pipeline.import_demo(tmp, name, mtime))
+        except ValueError as e:
+            return self.send(400, {"error": str(e)})
+        except Exception as e:
+            traceback.print_exc()
+            return self.send(500, {"error": f"{type(e).__name__}: {e}"[:300]})
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+    def add_prodemo(self, u):
+        """A pro demo or its archive sent by Settings (22/10): received in pieces into the pro inbox (an archive of a
+        whole match is up to 1.5 GB), then the inbox analyzed. Its date: the file's (when you downloaded it)."""
+        if config.role() == "client":
+            return self.send(403, {"error": i18n.tr("the coach's PC only")})
+        q = parse_qs(u.query)
+        name = re.sub(r"[^\w.\- ()]+", "_", os.path.basename((q.get("name") or [""])[0])).strip(" .")[:120]
+        if not name.lower().endswith(PRO_EXTS):
+            return self.send(400, {"error": i18n.tr("Not a demo or an archive of demos (.dem, .rar, .zip, .7z).")})
+        try:
+            mtime = float((q.get("mtime") or ["0"])[0]) / 1000 or None
+        except ValueError:
+            mtime = None
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0 or n > 8 * 2**30:
+            return self.send(400, {"error": i18n.tr("The file is empty or too big.")})
+        from wily.base import grow
+        if grow.free_gb() - n / 2**30 < grow.MIN_FREE_GB:
+            return self.send(507, {"error": i18n.tr("Not enough room on the disk: the base keeps {gb} GB free.", gb=grow.MIN_FREE_GB)})
+        os.makedirs(PRO_INBOX, exist_ok=True)
+        dest = os.path.join(PRO_INBOX, name)
+        if os.path.exists(dest):   # the same download sent twice: once is enough (the run may be reading it)
+            return self.send(409, {"error": i18n.tr("{name} is already waiting to be analyzed.", name=name)})
+        tmp = dest + f".{os.getpid()}_{threading.get_ident()}.part"
+        try:
+            with open(tmp, "wb") as f:
+                left = n
+                while left:
+                    b = self.rfile.read(min(left, 1 << 20))
+                    if not b:
+                        break
+                    f.write(b)
+                    left -= len(b)
+            if left:
+                return self.send(400, {"error": i18n.tr("The file did not arrive whole.")})
+            os.replace(tmp, dest)
+            if mtime:
+                os.utime(dest, (mtime, mtime))
+        except OSError as e:
+            return self.send(500, {"error": f"{type(e).__name__}: {e}"[:300]})
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        prodemos_start()
+        return self.send(200, prodemos_status())
+
     def do_POST(self):
         PAGE["any"] = time.time()
         """Journal check-ins and experiments: saved in out/, then the player's plan and page are rebuilt."""
         u = urlparse(self.path)
         if self.foreign(write=True):
             return self.send(403, {"error": i18n.tr("request from another site refused")})
+        if u.path == "/api/import":   # a demo file from the page (Import, drag and drop): streamed to disk, not JSON
+            return self.import_demo(u)
+        if u.path == "/api/prodemos/add":   # a pro demo or its archive from Settings (22/10): streamed to disk, not JSON
+            return self.add_prodemo(u)
         try:
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(n) or b"{}")
         except (ValueError, json.JSONDecodeError):
             return self.send(400, {"error": "invalid request"})
+        if u.path in ("/api/prodemos/run", "/api/prodemos/drop"):   # Settings' pro demos waiting: analyzed, or one deleted
+            if config.role() == "client":
+                return self.send(403, {"error": i18n.tr("the coach's PC only")})
+            if u.path.endswith("drop"):   # one the run could not read (its archive broken, no demo inside): gone
+                name = os.path.basename(str(body.get("name") or ""))
+                cur = (config.read_json(PRO_STATUS, {}) or {}).get("file")
+                if name in prodemos_files() and not (prodemos_alive() and name == cur):
+                    try:
+                        os.remove(os.path.join(PRO_INBOX, name))
+                    except OSError as e:
+                        return self.send(500, {"error": f"{type(e).__name__}: {e}"[:300]})
+            elif prodemos_files():
+                prodemos_start()
+            return self.send(200, prodemos_status())
+        if u.path == "/api/import/run":   # the imported demos read, then your profile, plan and page (16/10)
+            if not LOCK.acquire(blocking=False):
+                return self.send(409, {"error": i18n.tr("An analysis is already running"), "query": JOB["query"]})
+            threading.Thread(target=run_job, args=("Demo import", lambda: pipeline.analyze_local()), daemon=True).start()
+            return self.send(200, {"started": True})
         if u.path == "/api/gsi":  # CS2 Game State Integration: the game itself, many times per round
             from wily.live import gsi
             ok = gsi.update(body)
@@ -489,6 +736,8 @@ class Handler(BaseHTTPRequestHandler):
                         if not g.get("map") or g.get("practice"):
                             return self.send(409, {"error": i18n.tr("No match loaded.")})
                         voice.TEAM.start("your team agreed: the In game page's button", g.get("map"))
+                elif act == "test":   # Settings: the chosen microphone's level for 3 s (16/10), nothing recorded
+                    return self.send(200, voice.test())
                 elif act == "transcribe":
                     if not voice.start_transcription(str(body.get("id") or "")):
                         return self.send(409, {"error": i18n.tr("A transcription is already running.")})
@@ -504,19 +753,6 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/coach/paths":   # the page's plan this round: numpad 1-2-3 (A, mid, B) and 4-5-6 (tempo) say it in the team chat
             from wily.live import chatcalls
             return self.send(200 if chatcalls.write(body.get("paths"), body.get("extra"), body.get("tempo")) else 400, {})
-        if u.path in ("/api/lineshots/start", "/api/lineshots/stop"):   # the photo session of a map's lineups (training server)
-            from wily.insights import lineshots
-            if u.path.endswith("stop"):
-                return self.send(200, lineshots.stop())
-            if config.in_match():
-                return self.send(409, {"error": i18n.tr("A match is running: the photos after it.")})
-            mp = str(body.get("map") or "")
-            if not re.fullmatch(r"(de|cs|ar)_\w+", mp):
-                return self.send(400, {"error": "invalid map"})
-            try:
-                return self.send(200, lineshots.start(mp))
-            except (OSError, RuntimeError, ValueError) as e:
-                return self.send(400, {"error": str(e) or i18n.tr("training server error")})
         if u.path.startswith("/api/train/"):   # the training server (separate copy of the game, 127.0.0.1 only)
             from wily.training import replay
             act = u.path.rsplit("/", 1)[-1]
@@ -547,9 +783,29 @@ class Handler(BaseHTTPRequestHandler):
                     focus = body.get("focus") or None   # a focus block (13/10): one module for the whole time, one map
                     if focus is not None and (focus not in train.FOCUS or where in ("random", "mix")):
                         return self.send(400, {"error": "invalid module"})
+                    ex = body.get("exec") or None   # a Stuff focus block: a site take or defense instead of a time (19/10)
+                    from wily.training import execs as _ex, momentum as _mo   # a Momentum block: its part instead of a time too
+                    if ex is not None and not ((focus == "nade" and ex in _ex.KEYS) or (focus == "momentum" and ex in _mo.PICKS)):
+                        return self.send(400, {"error": "invalid exec"})
                     try:
-                        return self.send(200, train.play(sid, minutes, where, diff, focus))
+                        gun = body.get("weapon") or None   # Prepare's choice of weapon (20/10)
+                        if gun is not None and gun not in train.WEAPONS:
+                            return self.send(400, {"error": "invalid weapon"})
+                        seed = int(body["seed"]) if str(body.get("seed") or "").isdigit() else None   # the tests' fixed set (29/10)
+                        return self.send(200, train.play(sid, minutes, where, diff, focus, ex, gun, seed, bool(body.get("every"))))
                     except RuntimeError as e:   # another start on the server meanwhile
+                        return self.send(409, {"error": str(e)})
+                if act == "recette":   # 29/10: his own (the "recette" setting only): every drill the latest tests failed
+                    if not config.settings().get("recette"):
+                        return self.send(404, {"error": "not found"})
+                    if config.in_match() and not replay.on_server():
+                        return self.send(409, {"error": i18n.tr("A match is running: training after it.")})
+                    from wily.training import train
+                    sid = str(body.get("sid") or config.settings().get("own_steamid") or "")
+                    seed = int(body["seed"]) if str(body.get("seed") or "").isdigit() else None
+                    try:
+                        return self.send(200, train.play_recette(sid, int(body["diff"]) if body.get("diff") is not None else 2, seed))
+                    except RuntimeError as e:
                         return self.send(409, {"error": str(e)})
                 if act == "install":   # a player's PC: CS2's files linked next to the game, Metamod, CounterStrikeSharp, the plugin
                     if config.in_match():
@@ -643,6 +899,26 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self.send(502, {"error": f"the site: {type(e).__name__}"})
             return self.send(200, contributions.reports())
+        if u.path in ("/api/contrib/release", "/api/contrib/drop"):   # the coach's PC (15/10): the held uploads, his call
+            if config.role() == "client":
+                return self.send(403, {"error": i18n.tr("the coach's PC only")})
+            from wily.sharing import contributions
+            if u.path.endswith("drop"):
+                contributions.drop_held()
+                return self.send(200, dict(contributions.status(), client=False, pulling=PULL["running"]))
+
+            def release_now():
+                try:
+                    contributions.ingest(release=True)
+                except BaseException as e:
+                    PULL["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+                    print("held matches:", e, flush=True)
+                finally:
+                    PULL["running"] = False
+            if not PULL["running"]:   # one at a time with a pull (both write the base)
+                PULL.update(running=True, error=None)
+                threading.Thread(target=release_now, daemon=True).start()
+            return self.send(200, dict(contributions.status(), client=False, pulling=True))
         if u.path in ("/api/contrib/set", "/api/contrib/send", "/api/contrib/pull"):   # the matches shared with the base
             if u.path.endswith("pull"):   # the coach's PC: what players shared, now
                 if config.role() == "client":
@@ -976,6 +1252,26 @@ def app_busy():
     return None
 
 
+def server_copy_watch():
+    """After a CS2 update the training server's copy links the game's old files: linked again in the background when
+    nothing plays (16/10: it was done at the click on Warm-up, 1 min 40 s before the server even started)."""
+    time.sleep(90)
+    while True:
+        try:
+            from wily.training import replay
+            s = replay._state()
+            if replay.installed() and not app_busy() and not replay._pid_alive(s.get("pid")):
+                sys.path.insert(0, os.path.join(config.HERE, "plugin"))
+                import make_server
+                if not make_server.current():
+                    print("training server: CS2 was updated, its copy is linked again", flush=True)
+                    make_server.main(log=lambda *a: None)
+                    make_server.plugin()
+        except Exception as e:
+            print("training server copy:", e, flush=True)
+        time.sleep(1800)
+
+
 def cs2_page_watch():
     """CS2 starts and no Wily page is open: Wily opens its In game page (07/10, the user: the reminder "lance Wily" at
     CS2's start, "dans le chat du lobby": CS2 lets nothing write in its lobby's chat, neither a config nor a command, and
@@ -1074,7 +1370,7 @@ if __name__ == "__main__":
     # PC): the app then said it was already running while nothing was.
     ThreadingHTTPServer.allow_reuse_address = os.name != "nt"
     try:
-        srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+        srv = _Server(("127.0.0.1", PORT), Handler)
     except OSError as e:
         if serving(PORT):
             print(f"Wily is already running: open http://127.0.0.1:{PORT}/")
@@ -1085,8 +1381,32 @@ if __name__ == "__main__":
                  f"port was just released and the system still keeps it a few seconds.")
     url = f"http://127.0.0.1:{PORT}/"   # your Review first; CS2's start opens Live (cs2_page_watch)
     print(f"Wily: {url}  (Ctrl+C to stop)")
+    config.full_speed()   # 16/10: started without a window (Windows' startup), Windows may run it on the slow cores
     if not os.environ.get("COACH_TEST"):
         threading.Thread(target=cs2_page_watch, daemon=True).start()
+        threading.Thread(target=server_copy_watch, daemon=True).start()
+
+        def warm():   # your files in memory a moment after the app starts (the PC's start: nothing is there yet)
+            # started by hand, the PC up for a while (22/10, his test video: Prepare opened a minute after he started the
+            # app, its warm-up still 2 min away): at once; Windows' start: 2 min, the disk busy with the rest
+            try:
+                import ctypes
+                up = ctypes.windll.kernel32.GetTickCount64() / 1000.0
+            except Exception:
+                up = 0.0
+            time.sleep(5 if up > 600 else 120)
+            own = config.settings().get("own_steamid")
+            if own and not config.in_match():
+                pipeline.prefetch(int(own))
+            if own and not config.in_match():   # Prepare's answers for your maps, ahead (20/10: "accélérer la préparation")
+                from wily.training import train
+                try:   # this thread only below the others (the whole app's priority stays: its pages answer)
+                    import ctypes
+                    ctypes.windll.kernel32.SetThreadPriority(ctypes.windll.kernel32.GetCurrentThread(), -2)
+                except Exception:
+                    pass
+                train.prewarm(str(own))
+        threading.Thread(target=warm, daemon=True).start()
     if os.environ.get("COACH_TEST"):  # a test copy: leaves the game's settings, the Steam sync and the microphone alone
         print("test copy: game detection, sync and microphone left to the main app")
     else:

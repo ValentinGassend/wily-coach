@@ -32,6 +32,27 @@ PHRASE = {  # dim -> (high, low)
 _C = {}
 
 
+def _pro_zones(pid):
+    """One pro match: its map, and each player's zones after 5 s per side, with their counts in the order they first
+    appear."""
+    d = os.path.join(DEEP_PRO, pid)
+    if not os.path.exists(os.path.join(d, "samples.parquet")):
+        return None
+    meta = json.load(open(os.path.join(d, "meta.json"), encoding="utf-8"))
+    sm = pd.read_parquet(os.path.join(d, "samples.parquet"), columns=["steamid", "side", "t", "zone"])
+    sm = sm[(sm.t >= 5) & (sm.zone != "?")]
+    out = []
+    for (sid, side), g in sm.groupby(["steamid", "side"]):
+        n = g.zone.value_counts()
+        out.append([str(sid), side, [[z, int(n[z])] for z in pd.unique(g.zone) if z == z]])
+    return {"map": meta["map"], "zones": out}
+
+
+def _zone_col(zc):
+    """[[zone, count]...] -> the zones as a column: value_counts() gives the same as on the original one."""
+    return pd.Series(np.repeat(np.array([z for z, _ in zc], dtype=object), [n for _, n in zc]), dtype=object)
+
+
 def load():
     if "pro" in _C:
         return _C["pro"]
@@ -39,7 +60,8 @@ def load():
     if not fs:
         _C["pro"] = None
         return None
-    df = pd.concat([pd.read_parquet(f) for f in fs], ignore_index=True)
+    from wily.core import ledger   # 16/10: the 101 files kept as one, only a new or changed one read (5 s a plan)
+    df = ledger.stacked(STYLE_PRO, "style_pro")
     reg = json.load(open(os.path.join(PRO, "matches.json"), encoding="utf-8")) if os.path.exists(os.path.join(PRO, "matches.json")) else {}
     team, event = {}, {}
     for m in reg.values():
@@ -67,17 +89,16 @@ def load():
     agg["real_name"] = [D[s]["name"] if s in D else None for s in agg.index]
     agg["prole"] = [D[s]["role"] if s in D else None for s in agg.index]
     agg["hltv"] = [D[s]["hltv"] if s in D else f"https://www.hltv.org/search?query={agg.loc[s, 'name']}" for s in agg.index]
-    # zone presence per pro, map and side
+    # zone presence per pro, map and side: each pro match's counts kept (16/10: its 100 MB of positions read at every
+    # analysis), the same columns rebuilt from them
+    from wily.core import ledger
     zones = {}
+    pz = ledger.per_match("pro_zones", {p: st for p, st in ledger.folders(DEEP_PRO).items() if p in set(df.match.unique())}, _pro_zones)
     for pid in df.match.unique():
-        d = os.path.join(DEEP_PRO, pid)
-        if not os.path.exists(os.path.join(d, "samples.parquet")):
+        if pid not in pz:
             continue
-        meta = json.load(open(os.path.join(d, "meta.json"), encoding="utf-8"))
-        sm = pd.read_parquet(os.path.join(d, "samples.parquet"), columns=["steamid", "side", "t", "zone"])
-        sm = sm[(sm.t >= 5) & (sm.zone != "?")]
-        for (sid, side), g in sm.groupby(["steamid", "side"]):
-            zones.setdefault(str(sid), {}).setdefault(meta["map"], {}).setdefault(side, []).append(g.zone)
+        for sid, side, zc in pz[pid]["zones"]:
+            zones.setdefault(sid, {}).setdefault(pz[pid]["map"], {}).setdefault(side, []).append(_zone_col(zc))
     zp = {s: {m: {sd: pd.concat(v).value_counts(normalize=True).to_dict() for sd, v in ss.items()} for m, ss in ms.items()}
           for s, ms in zones.items()}
     _C["pro"] = (agg, P, zp, event, len(df.match.unique()))
@@ -85,18 +106,19 @@ def load():
 
 
 def player_zones(steamid):
+    from wily.app import pipeline
+    from wily.coaching import context
+    from wily.core import ledger
+    his = set(pipeline.player_matches(steamid))   # 15/10: his matches only (every match's positions were read)
+    dg = context.digest(steamid, his)   # 16/10: each match's zones kept with their counts (context.digest)
+    facts = ledger.match_facts()
     out = {}
     for mid in os.listdir(config.DEEP):
-        f = os.path.join(config.DEEP, mid, "samples.parquet")
-        if not os.path.exists(f):
+        if mid not in his or not (dg.get(mid) or {}).get("zones"):
             continue
-        sm = pd.read_parquet(f, columns=["steamid", "side", "t", "zone"])
-        sm = sm[(sm.steamid == int(steamid)) & (sm.t >= 5) & (sm.zone != "?")]
-        if not len(sm):
-            continue
-        meta = json.load(open(os.path.join(config.DEEP, mid, "meta.json"), encoding="utf-8"))
-        for side, g in sm.groupby("side"):
-            out.setdefault(meta["map"], {}).setdefault(side, []).append(g.zone)
+        mp = facts[mid]["map"] if mid in facts else json.load(open(os.path.join(config.DEEP, mid, "meta.json"), encoding="utf-8"))["map"]
+        for side, zc in dg[mid]["zones"].items():   # the zones again as a column: the same counts, in the same order
+            out.setdefault(mp, {}).setdefault(side, []).append(_zone_col(zc))
     return {m: {sd: pd.concat(v).value_counts(normalize=True).to_dict() for sd, v in ss.items()} for m, ss in out.items()}
 
 

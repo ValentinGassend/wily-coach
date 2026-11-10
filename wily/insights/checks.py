@@ -31,7 +31,7 @@ def _file(sid):
 def _my_views(sid, mid):
     """Your position and view in one demo, as T and alive: [round, x, y, z, yaw, pitch] every 4 ticks."""
     from demoparser2 import DemoParser
-    p = DemoParser(os.path.join(config.CACHE, mid + ".dem"))
+    p = DemoParser(config.demo(mid))
     T = p.parse_ticks(["X", "Y", "Z", "yaw", "pitch", "is_alive", "team_num", "total_rounds_played"], ticks=list(range(0, 700000, STEP)))
     T = T[(T.steamid.astype(str) == str(sid)) & T.is_alive.astype(bool) & (T.team_num == 2)]
     return T.assign(round=T.total_rounds_played + 1)[["round", "X", "Y", "Z", "yaw", "pitch"]].to_numpy(float)
@@ -47,7 +47,7 @@ def analyze_map(sid, mp, log=print):
                 holds.append(dict(h, site=train.replay_zone(z, mp)))
     if not holds:
         return []
-    mids = [m for m, mp_ in train._my_matches(str(sid), mp) if os.path.exists(os.path.join(config.CACHE, m + ".dem"))]
+    mids = [m for m, mp_ in train._my_matches(str(sid), mp) if config.has_demo(m)]
     stat = [{"in": set(), "look": set()} for _ in holds]
     t0 = time.time()
     for mid in mids:

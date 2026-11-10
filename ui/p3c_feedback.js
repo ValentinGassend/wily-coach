@@ -8,7 +8,7 @@ const FB_TAGS={training:["Aim","Prefire","Defense","Utility","Situations","Bots"
 const FB_TAG_L={Aim:tl("Aim"),Prefire:tl("Prefire"),Defense:tl("Defense"),Utility:tl("Utility"),Situations:tl("Situations"),Bots:tl("Bots"),"Lines & zones":tl("Lines & zones"),
   Connection:tl("Connection"),"Too long":tl("Too long"),"Too short":tl("Too short"),Calls:tl("Calls"),Radar:tl("Radar"),Economy:tl("Economy"),Reminders:tl("Reminders"),
   "Numpad keys":tl("Numpad keys"),"Too much on screen":tl("Too much on screen"),"Missed something":tl("Missed something"),"Too slow":tl("Too slow"),Useful:tl("Useful")};
-const FB_FACES=[["😖",tl("Bad")],["😕",tl("Meh")],["😐",tl("OK")],["🙂",tl("Good")],["🤩",tl("Great")]];
+const FB_FACES=[[IC("angry"),tl("Bad")],[IC("frown"),tl("Meh")],[IC("meh"),tl("OK")],[IC("smile"),tl("Good")],[IC("laugh"),tl("Great")]];
 let FB=null,fbTimer=null;
 function openFeedback(p){const d=$("#fbdlg");if(!d||d.open||!p||!p.id)return;FB={...p,rating:0,tags:new Set()};
   $("#fb-h").textContent=p.title||tl("How did it go?");$("#fb-sum").textContent=p.summary||"";

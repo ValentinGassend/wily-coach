@@ -13,7 +13,7 @@ const EXPN={veteran:tl("veteran player"),regular:tl("regular player"),improving:
 function levelLine(L,short){if(!L)return "";const bits=[];
   if(L.rating&&!short)bits.push(tl("Premier {season}: {rating}",{season:esc(L.season||""),rating:L.rating.toLocaleString(LOC)}));
   if(L.comp&&!short)bits.push(tl("{rank} in Competitive",{rank:esc(L.comp)}));
-  const xp=[L.hours!=null?(L.two_weeks_h!=null?tl("{h} h of CS2, {h2} h in the last 2 weeks",{h:L.hours.toLocaleString(LOC),h2:L.two_weeks_h}):tl("{h} h of CS2",{h:L.hours.toLocaleString(LOC)})):"",
+  const xp=[L.hours!=null?(L.two_weeks_h!=null?tl("{h} h of CS2, {h2} h in the last 2 weeks",{h:L.hours.toLocaleString(LOC),h2:L.two_weeks_h.toLocaleString(LOC)}):tl("{h} h of CS2",{h:L.hours.toLocaleString(LOC)})):"",
     L.wins&&!short?tln(L.wins,"{n} Competitive win","{n} Competitive wins"):"",L.premier_wins&&!short?tl("{n} in Premier",{n:L.premier_wins}):"",L.since&&!short?tl("Steam account since {year}",{year:L.since}):""].filter(Boolean).join(", ");
   return `${L.name?tl("level {name}",{name:esc(L.name)}):tl("unknown level")}${bits.length?` · ${bits.join(" · ")}`:""} · ${EXPN[L.experience]||esc(L.experience)}${xp?` (${xp})`:""}`}
 
@@ -21,8 +21,6 @@ function levelLine(L,short){if(!L)return "";const bits=[];
 let partySel=null,ckState={};
 const LVL={"reliable":tl("reliable"),"trend":tl("trend"),"no clear gap":tl("no clear gap"),"not enough data":tl("too few games")};
 const lvlCls=l=>l==="reliable"?"reliable":l==="trend"?"trend":"";
-function phaseCard(ph){return `<article class="phase"><h3>${esc(ph.title)}</h3>${ph.items.map(i=>`<div class="tip"><b>${esc(i.title)}</b><p>${esc(i.text)}</p>
-  ${i.do&&i.do.length?`<ul>${i.do.map(d=>`<li>${esc(d)}</li>`).join("")}</ul>`:""}${srcLinks(i.src,true)}</div>`).join("")}</article>`}
 function contextBlock(C){
   const pf=v=>v==null?"—":v.toFixed(2),recs=C.recs||[];
   const src=Object.entries(C.sources_count||{}).map(([k,n])=>k==="demo"?tl("{n} with a demo",{n}):k==="steam"?tl("{n} from the Steam history",{n}):tl("{n} from Leetify",{n})).join(", ");
@@ -38,21 +36,6 @@ function contextBlock(C){
    </tbody></table></div>
    ${C.partners&&C.partners.length?`<p>${tl("<b>Regular teammates</b> (on your team in at least 2 matches):")} ${C.partners.map(x=>`${esc(x.name)} ${tl("{w}W-{l}L, rating {r} over {n} games",{w:x.w,l:x.l,r:pf(x.perf),n:x.n})}`).join(" · ")}</p>`:""}
    ${srcLinks([C.rating_source],true)}`,"rt-table")}</article>`}
-// your journal: only on your own profile; folded until it becomes a habit (3 entries), with its count
-function checkinCard(nj){
-  if(!D.local)return `<article class="card"><h3>${tl("Pre-session journal")}</h3><p class="note">${tl("You fill in the journal (sleep, energy, warm-up) in the desktop app: double-click <code>Wily.bat</code>.")}</p></article>`;
-  const b=(k,vals)=>`<div class="btns" role="group" data-ck="${k}">${vals.map(([val,t])=>`<button type="button" data-v="${val}" aria-pressed="${String(ckState[k])===String(val)}">${t}</button>`).join("")}</div>`;
-  const five=[[1,"1"],[2,"2"],[3,"3"],[4,"4"],[5,"5"]];
-  return `<article class="card form"><details${(nj||0)>=3?" open":""}><summary style="cursor:pointer;font-family:var(--f-display);font-size:20px;font-weight:600">${tl("Pre-session journal")} <span class="note" style="font:13px var(--f-body)">· ${nj?tln(nj,"{n} entry so far","{n} entries so far"):tl("not used yet")}</span></summary>
-   <p class="note">${tl("20 seconds before your first game. Each entry is linked to your matches of the next 6 hours: over the weeks, I measure how sleep, energy and warm-up affect your rating.")}</p>
-   <div class="row"><label class="f" for="ck-sleep">${tl("Sleep (hours)")}</label><input id="ck-sleep" type="number" min="0" max="14" step="0.5" value="${esc(ckState.sleep_h??"")}"></div>
-   <div class="row"><span class="f">${tl("Energy (1-5)")}</span>${b("energy",five)}</div>
-   <div class="row"><span class="f">${tl("Mood (1-5)")}</span>${b("mood",five)}</div>
-   <div class="row"><span class="f">${tl("Warm-up")}</span>${b("warmup",[["none",tl("none")],["short",tl("under 10 min")],["full",tl("15 min or more")]])}</div>
-   <div class="row"><span class="f">${tl("Caffeine")}</span>${b("caffeine",[["yes",tl("yes")],["no",tl("no")]])}</div>
-   <div class="row"><span class="f">${tl("Group")}</span>${b("party",[["solo",tl("solo")],["duo",tl("duo")],["trio",tl("trio")],["quatuor",tl("4-stack")],["five",tl("5-stack")]])}</div>
-   <div class="row"><label class="f" for="ck-note">${tl("Goal")}</label><input id="ck-note" type="text" value="${esc(ckState.note??"")}" placeholder="${tl("Your goal for the session")}"></div>
-   <div class="row"><button type="button" class="primary" id="ck-save">${tl("Save")}</button><span class="note" id="ck-msg" role="status"></span></div></details></article>`}
 function partyBlock(PL){const P_=PL.party;if(!P_)return "";const keys=["solo","duo","trio","quatuor","five"],cur=partySel||PL.party_mode||"solo",x=P_[cur];
   const how={solo:tl("You mostly play solo, judging by the teammates who keep showing up in your matches."),duo:tl("You mostly play as a duo, judging by the teammates who keep showing up in your matches."),
     trio:tl("You mostly play as a trio, judging by the teammates who keep showing up in your matches."),quatuor:tl("You mostly play as a 4-stack, judging by the teammates who keep showing up in your matches."),
@@ -60,9 +43,6 @@ function partyBlock(PL){const P_=PL.party;if(!P_)return "";const keys=["solo","d
   return `<article class="card"><h3>${tl("Depending on your group")}</h3>${PL.party_mode?`<p class="note">${how[PL.party_mode]||""}</p>`:""}
    <div class="btns" role="group" aria-label="${tl("Group size")}">${keys.map(k=>`<button type="button" data-party="${k}" aria-pressed="${k===cur}">${esc(P_[k].title)}</button>`).join("")}</div>
    <ul>${x.items.map(t=>`<li>${esc(t)}</li>`).join("")}</ul>${srcLinks(x.src,true)}</article>`}
-function metaBlock(PL){if(!PL.meta||!PL.meta.length)return "";
-  return `<h3>${tl("What changed in the game")}</h3><p class="note">${tl("Research from {date}: patches, the map pool and what they mean for your game.",{date:esc(PL.updated)})}</p>
-  <div class="meta-list">${PL.meta.map(m=>`<article><span class="eyebrow">${esc(m.date)}</span><b>${esc(m.title)}</b><p>${esc(m.text)}</p><p>${tl("<b>For you:</b> {impact}",{impact:esc(m.impact)})}</p>${srcLinks(m.src,true)}</article>`).join("")}</div>`}
 function noPlan(v){v.innerHTML=`<div class="empty">${tl("This player's plan isn't ready yet. Run their analysis again from the search bar.")}</div>`}
 // ---------- the tabs' briefs (04/10) ----------
 // mid-round: your weakest decisions against the base and the pros, your strengths, the fix or reflex to apply
@@ -88,25 +68,10 @@ function renderRoutine(){
   const p=P(),v=$("#v-routine"),PL=p.advice.plan;if(!PL)return noPlan(v);
   v.innerHTML=`<div class="head"><div style="display:grid;gap:4px"><span class="eyebrow">${esc(p.name)}</span><h2>${tl("Your habits")}</h2></div></div>
    ${routineBrief(PL)}${anchor("rt-habits")}
-   ${(()=>{   // your journal next to your habits; another player's habits alone, full width (07/10: they sat in the journal's narrow column)
-      const ck=P().steamid===D.own?checkinCard((PL.context||{}).journal_n):"",
-        cx=PL.context?contextBlock(PL.context):`<article class="card"><h3>${tl("Your playing habits")}</h3><p class="note">${tl("No dated match for this player: habits (times, sessions, group) need demos or a Leetify history.")}</p></article>`;
-      return ck?`<div class="pg-grid2">${ck}${cx}</div>`:cx})()}
-   ${fold(tl("Your routine: before, during and after the game"),`<div class="phases">${PL.phases.map(phaseCard).join("")}</div>`,"rt-phases")}
-   ${fold(tl("Depending on your group"),partyBlock(PL),"rt-group")}
-   ${fold(tl("What changed in the game lately"),metaBlock(PL),"rt-meta")}`;
-  wireCheckin(v,p);
+   ${PL.context?contextBlock(PL.context):`<article class="card"><h3>${tl("Your playing habits")}</h3><p class="note">${tl("No dated match for this player: habits (times, sessions, group) need demos or a Leetify history.")}</p></article>`}
+   ${fold(tl("Depending on your group"),partyBlock(PL),"rt-group")}`;
   $$("[data-party]",v).forEach(b=>b.onclick=()=>{partySel=b.dataset.party;renderRoutine()});
 }
-// the journal's controls (Routine and Prepare)
-function wireCheckin(v,p){
-  $$("[data-ck]",v).forEach(g=>$$("button",g).forEach(bt=>bt.onclick=()=>{ckState[g.dataset.ck]=bt.dataset.v;press(g,"button",bt)}));
-  const sl=$("#ck-sleep",v),nt=$("#ck-note",v);if(sl)sl.oninput=()=>ckState.sleep_h=sl.value;if(nt)nt.oninput=()=>ckState.note=nt.value;
-  const sv=$("#ck-save",v);if(sv)sv.onclick=async()=>{sv.disabled=true;const msg=$("#ck-msg",v);
-    try{const j=await api("/api/checkin",{sid:p.steamid,...ckState});ckState={};msg.textContent=tln(j.n,"Saved: {n} entry in your journal.","Saved: {n} entries in your journal.");
-      $$("[data-ck] button",v).forEach(x=>x.setAttribute("aria-pressed","false"));if(sl)sl.value="";if(nt)nt.value=""}
-    catch(e){msg.textContent=tl("Failed: {error}",{error:e.message})}sv.disabled=false}}
-
 // ---------- view: mid-round ----------
 let pbSide="me",midMap=null,wpSide=null;
 const isBoth=x=>x.side==="both"||x.side==="tous";
@@ -222,7 +187,7 @@ const DIFF=[tl("Easy"),tl("Normal"),tl("Hard"),tl("Expert")];
 function trainDiff(){try{return +(localStorage.getItem("coach_diff")??2)}catch(e){return 2}}
 function tPref(k,d){try{return localStorage.getItem("coach_t"+k)??d}catch(e){return d}}
 function tSet(k,v){try{localStorage.setItem("coach_t"+k,v)}catch(e){}}
-const BLOCK={defend:"🛡 "+tl("Defense"),push:"🚶 "+tl("Push"),aim:"🎯 "+tl("Aim"),crossfire:"🎯 Crossfire",nade:"💨 "+tl("Utility"),wallbang:"🧱 "+tl("Wallbang"),situation:"🔁 "+tl("Situations"),momentum:"🏃 Momentum"};
+const BLOCK={defend:IC("shield")+" "+tl("Defense"),push:IC("footprints")+" "+tl("Push"),aim:IC("crosshair")+" "+tl("Aim"),crossfire:IC("crosshair")+" Crossfire",nade:IC("cloud")+" "+tl("Utility"),wallbang:IC("brick-wall")+" "+tl("Wallbang"),situation:IC("repeat")+" "+tl("Situations"),momentum:IC("fast-forward")+" Momentum"};
 // not on this PC yet (a player's copy of the app, 05/10): made from the app, CS2's files linked next to the game
 // again: what to show once the install started (13/10: from Prepare, its warm-up card, not the older training panel)
 function trainInstall(box,sid,st,again){const ins=st.install||{},next=again||(()=>trainLoad(box,sid));
@@ -246,24 +211,24 @@ async function trainLoad(box,sid){clearTimeout(TRAIN.timer);
   const mapsTop=Object.keys(M).slice(0,8);
   const chip=(k,v,lab,on)=>`<button type="button" data-t${k}="${v}" aria-pressed="${on}">${lab}</button>`;
   // the session running: what the server says (block, drill, points)
-  const live=ss&&st.running?`<div class="tlive"><b>●</b><span>${BLOCK[ss.block]||tl("Session")} · ${esc(ss.drill||"…")}</span><span>⭐ ${ss.points||0} · ${ss.ok||0}/${ss.done||0} ✔${ss.streak>=2?` · 🔥${ss.streak}`:""}</span><span>${ss.left?`${Math.floor(ss.left/60)}:${String(ss.left%60).padStart(2,"0")}`:""}</span>${st.humans?"":`<span class="note">${tl("waiting for you on the server")}</span>`}</div>`:"";
+  const live=ss&&st.running?`<div class="tlive"><b>●</b><span>${BLOCK[ss.block]||tl("Session")} · ${esc(ss.drill||"…")}</span><span>${IC("star")} ${ss.points||0} · ${ss.ok||0}/${ss.done||0} ✔${ss.streak>=2?` · ${IC("flame")}${ss.streak}`:""}</span><span>${ss.left?`${Math.floor(ss.left/60)}:${String(ss.left%60).padStart(2,"0")}`:""}</span>${st.humans?"":`<span class="note">${tl("waiting for you on the server")}</span>`}</div>`:"";
   const maps=[...new Set(sc.map(s=>s.map))];if(TRAIN.map&&!maps.includes(TRAIN.map))TRAIN.map=null;
   const list=sc.filter(s=>!TRAIN.map||s.map===TRAIN.map).slice(0,12);
   const lab=s=>s.kind==="clutch"?tl("1v{n} clutch",{n:s.vs}):[tl("death"),s.opening?tl("opening"):"",s.traded?"":tl("no trade")].filter(Boolean).join(" · ");
-  const res=s=>{const r=R[s.id];return r&&r.tries?`<span class="tres ${r.won+r.survived?"ok":""}">${r.tries}× · ${r.won+r.survived} ✓</span>`:r&&r.watched?`<span class="tres">👁 ${r.watched}</span>`:`<span class="tres">${tl("new")}</span>`};
+  const res=s=>{const r=R[s.id];return r&&r.tries?`<span class="tres ${r.won+r.survived?"ok":""}">${r.tries}× · ${r.won+r.survived} ✓</span>`:r&&r.watched?`<span class="tres">${IC("eye")} ${r.watched}</span>`:`<span class="tres">${tl("new")}</span>`};
   box.innerHTML=`<div class="tplay">
-     <div class="tlvl"><b>${tl("LVL {n}",{n:P.level})}</b><div class="tbar"><i style="width:${pct}%"></i></div><span>${P.xp} / ${P.to} XP</span>${nd?`<span class="tdue">🔁 ${tl("{n} to redo",{n:nd})}</span>`:""}${P.mastered?`<span>⭐ ${tl("{n} mastered",{n:P.mastered})}</span>`:""}</div>
+     <div class="tlvl"><b>${tl("LVL {n}",{n:P.level})}</b><div class="tbar"><i style="width:${pct}%"></i></div><span>${P.xp} / ${P.to} XP</span>${nd?`<span class="tdue">${IC("repeat")} ${tl("{n} to redo",{n:nd})}</span>`:""}${P.mastered?`<span>⭐ ${tl("{n} mastered",{n:P.mastered})}</span>`:""}</div>
      ${live}
      <div class="trow"><span class="tk2">⏱</span>${[5,10,20,30,45].map(m=>chip("min",m,m===5?tl("5 min · warm-up"):tl("{n} min",{n:m}),m===mins)).join("")}</div>
-     <div class="trow"><span class="tk2">🗺</span>${chip("where","random","🎲 "+tl("Random"),where==="random")}${chip("where","mix","🔀 "+tl("Mix"),where==="mix")}${mapsTop.map(m=>chip("where",m,MAPN(m),where===m)).join("")}</div>
-     <div class="trow"><span class="tk2">🤖</span>${DIFF.map((n,i)=>`<button type="button" data-tdiff="${i}" aria-pressed="${i===df}">${n}</button>`).join("")}${sg?`<span class="note">${tl("suggested: {level} · {why}",{level:DIFF[sg.diff],why:esc(sg.why)})}${sg.warmup?` · ${tl("warm-up: {why}",{why:esc(sg.warm_why)})}`:""}</span>`:""}</div>
+     <div class="trow"><span class="tk2">${IC("map")}</span>${chip("where","random",IC("dices")+" "+tl("Random"),where==="random")}${chip("where","mix",IC("shuffle")+" "+tl("Mix"),where==="mix")}${mapsTop.map(m=>chip("where",m,MAPN(m),where===m)).join("")}</div>
+     <div class="trow"><span class="tk2">${IC("bot")}</span>${DIFF.map((n,i)=>`<button type="button" data-tdiff="${i}" aria-pressed="${i===df}">${n}</button>`).join("")}${sg?`<span class="note">${tl("suggested: {level} · {why}",{level:DIFF[sg.diff],why:esc(sg.why)})}${sg.warmup?` · ${tl("warm-up: {why}",{why:esc(sg.warm_why)})}`:""}</span>`:""}</div>
      <div class="trow"><button type="button" class="tbig" data-tgo>${ss&&st.running?"↻ "+tl("NEW SESSION"):"▶ "+tl("PLAY")}</button>${ss&&st.running&&!st.humans?`<button type="button" data-tjoin>↪ ${tl("Rejoin the server")}</button>`:""}${st.running?`<button type="button" data-tstop>${tl("Stop the server")}</button>`:""}<span class="note" id="tmsg" role="status">${mins<=5?`${BLOCK.defend} → ${BLOCK.push}`:`${BLOCK.defend} → ${BLOCK.push} → ${BLOCK.nade} → ${BLOCK.situation}`}</span></div>
    </div>
    <details class="tcarte"><summary>${tl("Situations one by one ({n})",{n:sc.length})}</summary>
    ${maps.length>1?`<div class="btns" role="group" aria-label="${tl("Map")}"><button type="button" data-tmap="" aria-pressed="${!TRAIN.map}">${tl("All")}</button>${maps.map(m=>`<button type="button" data-tmap="${m}" aria-pressed="${TRAIN.map===m}">${MAPN(m)}</button>`).join("")}</div>`:""}
    <div class="tlist">${list.map((s,i)=>`<div class="tsit ${st.scenario===s.id?"cur":""}"><b>${MAPN(s.map)} R${s.round}</b>
      <span class="tk ${s.kind}">${lab(s)}</span><span class="tz">${esc(s.zone||"")}${s.mine?` · ${esc(s.mine)}`:""}${s.by?` <span class="note">${tl("vs {name} ({weapon})",{name:esc(s.by),weapon:esc(s.weapon||"")})}</span>`:""}</span>${res(s)}
-     <button type="button" data-tplay="${i}" data-mode="actor">▶ ${tl("Play")}</button><button type="button" data-tplay="${i}" data-mode="spec">👁 ${tl("Watch")}</button></div>`).join("")||`<span class="note">${tl("No situation yet: it needs the demos of your matches.")}</span>`}</div>
+     <button type="button" data-tplay="${i}" data-mode="actor">▶ ${tl("Play")}</button><button type="button" data-tplay="${i}" data-mode="spec">${IC("eye")} ${tl("Watch")}</button></div>`).join("")||`<span class="note">${tl("No situation yet: it needs the demos of your matches.")}</span>`}</div>
    <p class="note">${tl("In game: <b>!r</b> again · <b>!n</b> next · <b>!p</b> previous · <b>!spec</b> watch / play · <b>!stop</b>")}</p></details>`;
   if(TRAIN.open)$(".tcarte",box).open=true;
   $(".tcarte",box).ontoggle=e=>TRAIN.open=e.target.open;
@@ -326,7 +291,7 @@ async function pollUpdate(v){clearTimeout(S.upTimer);
   if(pr.busy||pr.restarting)S.upTimer=setTimeout(()=>{if(S.view==="settings")pollUpdate(v)},1500)}
 // the coach's messages to the players' apps (14/10, tools/notices.py): signed, under the top bar, until closed or expired
 function bcast(u){const box=$("#bcast");if(!box)return;const N=((u||{}).notices||[]);
-  box.hidden=!N.length;box.innerHTML=N.map(n=>`<div class="bc ${n.level==="warn"?"warn":""}" data-bc="${esc(n.id)}"><span class="bc-k">${n.level==="warn"?"⚠":"📣"} ${tl("From Wily's author")}</span><span class="bc-t">${esc(n.text)}${n.link?` <a href="${esc(n.link)}" target="_blank" rel="noopener noreferrer">${tl("More")} ↗</a>`:""}</span><button type="button" class="bc-x" aria-label="${tl("Close")}" title="${tl("Close")}">✕</button></div>`).join("");
+  box.hidden=!N.length;box.innerHTML=N.map(n=>`<div class="bc ${n.level==="warn"?"warn":""}" data-bc="${esc(n.id)}"><span class="bc-k">${n.level==="warn"?IC("triangle-alert"):IC("megaphone")} ${tl("From Wily's author")}</span><span class="bc-t">${esc(n.text)}${n.link?` <a href="${esc(n.link)}" target="_blank" rel="noopener noreferrer">${tl("More")} ↗</a>`:""}</span><button type="button" class="bc-x" aria-label="${tl("Close")}" title="${tl("Close")}">✕</button></div>`).join("");
   $$(".bc-x",box).forEach(b=>b.onclick=async()=>{const el=b.closest("[data-bc]");el.remove();box.hidden=!box.children.length;
     try{await api("/api/update/dismiss",{id:el.dataset.bc})}catch(e){}})}
 function gearDot(u){bcast(u);const g=$(".gear");if(!g)return;const n=((u||{}).available||[]).length;g.classList.toggle("has-update",!!n);
@@ -338,17 +303,26 @@ function shareCard(c){
   if(!c.client){const st=c.stats||{};
     return `<article class="card" id="ct-card"><h3>${tl("Matches shared by players")}${itip(tl("The base loop pulls them every hour while it runs; each match is checked again here (the app's own tables, no real SteamID, no name) and kept once."))}</h3>
      <p class="note">${c.token?`${tl("{a} joined the base · {b} already there · {c} refused",{a:st.joined||0,b:st.duplicates||0,c:st.refused||0})}${c.held?` · <b>${tl("{n} held",{n:c.held})}</b>${itip(tl("Sent by a build whose first-launch notice didn't mention the matches (10/10): kept out of the base. <code>python -m wily.sharing.contributions release</code> adds them, deleting <code>out/contrib_in/held</code> drops them."))}`:""}${c.waiting?` · ${tl("{n} waiting here",{n:c.waiting})}`:""}${c.last?` · ${tl("last pull {date}",{date:when(c.last)})}`:""}`:tl("Not set up yet: python -m wily.sharing.contributions init, then publish the site (website/deploy.py).")}</p>
-     ${c.token?`<div class="btns"><button type="button" id="ct-pull">${tl("Pull now")}</button></div>`:""}</article>`}
+     ${c.token?`<div class="btns"><button type="button" id="ct-pull"${c.pulling?" disabled":""}>${tl("Pull now")}</button>${c.held&&!c.pulling?`<button type="button" id="ct-release">${tl("Add the {n} held to the base",{n:c.held})}</button><button type="button" id="ct-drop">${tl("Delete the held")}</button>`:""}</div>`:""}
+     <div id="pd-box"></div></article>`}
   return `<article class="card" id="ct-card"><h3>${tl("Share my matches with the base")} ${c.on?`<span class="pill strong">${tl("on")}</span>`:`<span class="pill">${tl("off")}</span>`}</h3>
    <p class="note">${c.on?`${tln(c.sent,"{n} match shared","{n} matches shared")}${c.waiting?` · ${tl("{n} waiting",{n:c.waiting})}`:""}${c.last?` · ${tl("last {date}",{date:when(c.last)})}`:""}`:tl("Off: nothing leaves this PC.")}${c.error?` · ${tl("last try failed: {error}",{error:esc(c.error)})}`:""}</p>
    ${setFold("set-share",tl("What is shared, and how to have it deleted"),`<p class="note">${tl("The base you're compared with grows with the players who use the app. When this is on, your new matches are sent anonymized: what the app extracted from each demo (positions, duels, grenades, buys, rounds), with every SteamID replaced by a random ID used for that match only, every name removed and a random match ID. Never your demos, your voice, your settings or your profile.")}</p>
    <p class="note">${tl("You can turn it off at any time. To have what this PC sent deleted before it joins the base, write to the developer with this installation's ID: {id}.",{id:`<code>${esc(c.install||"")}</code>`})} <a href="https://wily.valentingassend.com/${LANG==="fr"?"confidentialite":"privacy"}.html" target="_blank" rel="noopener" style="color:var(--ct)">${tl("Privacy policy")}</a></p>`)}
    <div class="btns"><button type="button"${c.on?"":` class="primary"`} id="ct-on" data-on="${c.on?0:1}">${c.on?tl("Stop sharing"):tl("Share my matches")}</button>${c.on&&c.waiting?`<button type="button" id="ct-send"${c.sending?" disabled":""}>${tl("Send now")}</button>`:""}</div></article>`}
 function wireShare(v){
-  const on=$("#ct-on",v),sd=$("#ct-send",v),pl=$("#ct-pull",v);
+  wirePro(v);
+  const on=$("#ct-on",v),sd=$("#ct-send",v),pl=$("#ct-pull",v),rl=$("#ct-release",v),dr=$("#ct-drop",v);
   const redo=async()=>{let c=null;try{c=await (await fetch("/api/contrib")).json()}catch(e){return}const k=$("#ct-card",v);if(k&&k.isConnected){k.outerHTML=shareCard(c);wireShare(v)}};
   if(on)on.onclick=async()=>{on.disabled=true;try{await api("/api/contrib/set",{on:on.dataset.on==="1"})}catch(e){}redo()};
   if(sd)sd.onclick=async()=>{sd.disabled=true;try{await api("/api/contrib/send",{})}catch(e){}setTimeout(redo,3000)};
+  // the held uploads (15/10): into the base (checked like any pull, in the background) or deleted, the coach's call
+  if(rl)rl.onclick=async()=>{rl.disabled=true;if(dr)dr.disabled=true;rl.textContent=tl("Adding…");
+    try{await api("/api/contrib/release",{})}catch(e){rl.insertAdjacentHTML("afterend",`<span class="note"> ${tl("failed: {error}",{error:esc(e.message)})}</span>`);return}
+    for(let i=0;i<450;i++){await new Promise(r=>setTimeout(r,2000));if(!rl.isConnected)return;const c=await getC();if(c&&!c.pulling)break}
+    redo()};
+  if(dr)dr.onclick=async()=>{const n=dr.dataset.sure;if(!n){dr.dataset.sure="1";dr.textContent=tl("Delete them for good?");return}
+    dr.disabled=true;if(rl)rl.disabled=true;try{await api("/api/contrib/drop",{})}catch(e){}redo()};
   // Pull now (12/10): the server pulls and checks in the background, often longer than a few seconds: the button
   // follows it to its end, then says what joined, that nothing was new, or why it failed
   const getC=async()=>{try{return await (await fetch("/api/contrib")).json()}catch(e){return null}};
@@ -363,6 +337,46 @@ function wireShare(v){
     if(c.pull_error){done(tl("failed: {error}",{error:esc(c.pull_error)}));return}
     const a=(b4.stats||{}),z=(c.stats||{}),d=["joined","duplicates","refused"].map(x=>(z[x]||0)-(a[x]||0)),h=Math.max(0,(c.held||0)-(b4.held||0)),n=d[0]+d[1]+d[2]+h;
     done(n?(h?tl("pulled {n} match(es): {a} joined, {b} already there, {c} refused, {h} held",{n,a:d[0],b:d[1],c:d[2],h}):tl("pulled {n} match(es): {a} joined, {b} already there, {c} refused",{n,a:d[0],b:d[1],c:d[2]})):tl("checked just now: nothing new"))}}
+// pro demos you downloaded yourself (22/10, the coach: "rajoute un bouton pour ajouter les démos ... à l'analyse pour
+// s'en servir aussi pour trouver des stuffs"): each file sent whole, then the inbox analyzed into the pro base in the
+// background; the box follows the run to its end and says what joined the pro base, or why not
+function pdBox(p,up){
+  const L=p.last||{},cur=p.running?L.file:null,run=new Set(p.running?L.files||[]:[]),here=new Set((p.waiting||[]).map(w=>w.name));
+  const W=p.running&&!L.files?[]:(p.waiting||[]).filter(w=>!run.has(w.name));   // the run's own files (its list not written yet: all of them) not waiting
+  const why={"a match is going on":tl("a match is going on"),"the app is analyzing":tl("the app is analyzing"),
+    "a recording or a transcription":tl("a recording or a transcription"),"the app is updating its references":tl("the app is updating its references")};
+  const now=up?tl("Sending {name}… {p}%",{name:esc(up.name),p:up.p})
+    :!p.running?"":L.step==="wait"?tl("Waiting: {why}",{why:why[L.why]||esc(L.why||"")})
+    :L.step==="refresh"?tl("The pros' references computed again…")
+    :cur?tl("Analyzing {name}…",{name:esc(cur)})+(L.step==="map"&&L.n>1?` · ${tl("map {i}/{n}",{i:L.i,n:L.n})}`:""):tl("Analyzing…");
+  const who=d=>esc((d.teams||[]).join(" vs ")||tl("teams not in the demo")),maps=d=>esc((d.maps||[]).map(m=>MAPN(m)).join(", "));
+  const res=[...(L.done||[]).map(d=>d.already?tl("{file}: already in the pro base",{file:esc(d.file)}):`${who(d)} (${maps(d)})`),
+    ...(L.failed||[]).filter(f=>here.has(f.file)).map(f=>tl("{file}: not added ({why})",{file:esc(f.file),why:f.why==="no demo"?tl("no demo inside, or 7-Zip could not open it"):esc(f.why||"")}))];
+  return `<p class="note"><b>${tl("Pro demos")}</b>${itip(tl("Demos you downloaded yourself (a match's GOTV Demo on HLTV, a LAN's archive: .dem, .rar, .zip or .7z): each map is analyzed into the pro base with its teams, then used to find the stuffs (a pro's throw counts three times) and for the pros' references. The analysis waits while a match is going on; the copies sent here are deleted once analyzed, your own files stay where they are."))} · ${tln(p.maps||0,"{n} map in the pro base","{n} maps in the pro base")}${now?` · ${now}`:""}${W.length?` · ${tln(W.length,"{n} file waiting","{n} files waiting")}`:""}${L.step==="disk"&&!p.running?` · ${tl("Stopped: not enough room on the disk")}`:""}</p>
+   ${!p.running&&!up&&L.ended&&res.length?`<p class="note">${tl("Last import: {list}",{list:res.join(" · ")})}</p>`:""}
+   ${W.length&&!p.running&&!up?`<ul class="note">${W.map(w=>`<li>${esc(w.name)} · ${tl("{n} MB",{n:w.mb})} <button type="button" data-pd-drop="${esc(w.name)}">${tl("Delete")}</button></li>`).join("")}</ul>`:""}
+   <div class="btns"><button type="button" id="pd-add"${up?" disabled":""}>${tl("Add demos")}</button>${W.length&&!p.running&&!up?`<button type="button" id="pd-run">${tl("Analyze them")}</button>`:""}<input type="file" id="pd-file" accept=".dem,.rar,.zip,.7z" multiple hidden></div>`}
+async function wirePro(v){
+  const get=async()=>{try{return await (await fetch("/api/prodemos")).json()}catch(e){return null}};
+  let p=await get(),following=false;if(!p||p.maps===undefined)return;   // an app not restarted since: no box
+  const show=(up,err)=>{const b=$("#pd-box",v);if(!b||!b.isConnected)return false;b.innerHTML=pdBox(p,up)+(err?`<p class="note">${err}</p>`:"");wire();return true};
+  // the run to its end: what it is on, then what joined
+  const follow=async()=>{if(following)return;following=true;
+    while(true){await new Promise(r=>setTimeout(r,2000));const q=await get();if(!q)continue;p=q;if(!show()||!q.running)break}following=false};
+  function wire(){
+    const add=$("#pd-add",v),inp=$("#pd-file",v),run=$("#pd-run",v);
+    if(add&&inp){add.onclick=()=>inp.click();inp.onchange=async()=>{const fs=[...inp.files];inp.value="";let err="";
+      for(const f of fs){try{await pdSend(f,pc=>show({name:f.name,p:pc}))}catch(e){err+=` ${tl("failed: {error}",{error:esc(`${f.name}: ${e.message}`)})}`}}
+      const q=await get();if(q)p=q;show(null,err.trim());if(p.running)follow()}}
+    if(run)run.onclick=async()=>{run.disabled=true;try{p=await api("/api/prodemos/run",{})}catch(e){}show();if(p.running)follow()};
+    $$("[data-pd-drop]",v).forEach(b=>b.onclick=async()=>{b.disabled=true;try{p=await api("/api/prodemos/drop",{name:b.dataset.pdDrop})}catch(e){}show()})}
+  show();if(p.running)follow()}
+// one file sent whole to the app (an archive of a whole match is up to 1.5 GB): its progress, then the app's answer
+function pdSend(f,prog){return new Promise((ok,ko)=>{const x=new XMLHttpRequest();
+  x.open("POST",`/api/prodemos/add?name=${encodeURIComponent(f.name)}&mtime=${f.lastModified||0}`);
+  x.upload.onprogress=e=>{if(e.lengthComputable)prog(Math.round(100*e.loaded/e.total))};
+  x.onload=()=>{let r={};try{r=JSON.parse(x.responseText||"{}")}catch(e){}x.status<300?ok(r):ko(new Error(r.error||x.statusText||String(x.status)))};
+  x.onerror=()=>ko(new Error(tl("Wily's local server isn't responding.")));x.send(f)})}
 // a bug report (05/10, the alpha): the player writes, sees what is sent, sends; kept and sent later when offline
 function bugPage(){return `${S.view||"?"}${S.player&&S.player===D.own?" (own profile)":S.player?" (another profile)":""} ${location.pathname}${location.hash}`.slice(0,120)}
 function openReport(kind){const d=$("#bugdlg");if(!d)return;$("#bug-msg").textContent="";$("#bug-send").disabled=false;
@@ -384,23 +398,40 @@ function wireReport(){const d=$("#bugdlg");if(!d||d.dataset.wired)return;d.datas
 function reportCard(){if(D.role!=="client")return "";
   return `<article class="card"><h3>${tl("Alpha")} <span class="pill">0.0.x</span></h3><p>${tl("Wily is in alpha and open to everyone for the first time, so things will break. Tell me what broke, or share an idea: the \"alpha · report\" tag at the top works from any page.")}</p>
    <div class="btns"><button type="button" class="primary" data-report="bug">${tl("Report a bug")}</button><button type="button" data-report="idea">${tl("Suggest an idea")}</button></div></article>`}
-// the coach's PC: what players reported, the newest first
+// the coach's PC: what players reported (16/10: their feedback apart, read and never "done"; a report sent again shown once)
+const isFb=r=>r.kind==="feedback"||/^\[feedback/.test(r.text||""),FACES=[IC("angry"),IC("frown"),IC("meh"),IC("smile"),IC("laugh")];
+function fbParse(r){const L=(r.text||"").split("\n"),h=/^\[feedback · (.*?) · (\d)\/5\]\s*(.*)$/.exec(L[0]||"")||[],tags=[],note=[];
+  L.slice(1).forEach(x=>{const t=/^Tags: (.*)$/.exec(x);if(t)tags.push(...t[1].split(/,\s*/).filter(Boolean));else if(x.trim())note.push(x.trim())});
+  return {r,warm:/warm-up|training/.test(`${h[1]||""} ${r.page||""}`),n:r.rating||+(h[2]||0),sum:h[3]||"",tags,note:note.join(" ")}}
+function feedbackCard(rs){if(D.role==="client"||!Array.isArray(rs))return "";
+  const fb=rs.filter(isFb).map(fbParse);if(!fb.length)return "";
+  const rated=fb.filter(f=>f.n),avg=rated.length?rated.reduce((a,f)=>a+f.n,0)/rated.length:0,cnt=[1,2,3,4,5].map(n=>rated.filter(f=>f.n===n).length),mx=Math.max(1,...cnt),tags={};
+  fb.forEach(f=>f.tags.forEach(t=>tags[t]=(tags[t]||0)+1));
+  const one=f=>`<li><span class="fb-face" title="${f.n?f.n+"/5":""}">${f.n?FACES[f.n-1]:"·"}</span><div><b>${f.warm?tl("Warm-up"):tl("Match with Live")}</b> <span class="note">${esc(f.sum)} · ${when(f.r.at)}</span>
+     ${f.tags.length?`<div class="fb-tags">${f.tags.map(t=>`<span class="pill">${esc(t)}</span>`).join("")}</div>`:""}${f.note?`<p>“${esc(f.note)}”</p>`:""}</div></li>`;
+  return `<article class="card" id="fb-card"><h3>${tl("Players' feedback")} <span class="pill">${fb.length}</span>${itip(tl("Asked after a warm-up and after a match with Live: a face, a few tags, a few words. To read: nothing to mark."))}</h3>
+   <div class="fb-sum"><b class="fb-avg">${avg?avg.toLocaleString(LOC,{maximumFractionDigits:1}):"—"}<small>/5</small></b>
+    <div class="fb-dist">${cnt.map((c,i)=>`<span><i style="height:${Math.round(100*c/mx)}%"></i><em>${FACES[i]}</em><small>${c}</small></span>`).join("")}</div>
+    ${Object.keys(tags).length?`<div class="fb-tags">${Object.entries(tags).sort((a,b)=>b[1]-a[1]).map(([t,n])=>`<span class="pill">${esc(t)} · ${n}</span>`).join("")}</div>`:""}</div>
+   <ul class="fblist">${fb.slice(0,3).map(one).join("")}</ul>
+   ${fb.length>3?setFold("set-fbmore",`${tl("Older")} <span class="note">${fb.length-3}</span>`,`<ul class="fblist">${fb.slice(3,40).map(one).join("")}</ul>`):""}</article>`}
 function reportsCard(rs){if(D.role==="client"||!Array.isArray(rs))return "";
-  const fbk=r=>r.kind==="feedback"||/^\[feedback/.test(r.text||""),face=r=>{const m=/(\d)\/5\]/.exec(r.text||"");const n=r.rating||(m?+m[1]:0);return n?" "+["😖","😕","😐","🙂","🤩"][n-1]:""};
-  const open=rs.filter(r=>!r.done),one=r=>`<li class="rep${r.done?" done":""}"><div><b>${fbk(r)?`💬 ${tl("Feedback")}${face(r)}`:/^\[in-game !report/.test(r.text||"")?"🎮 "+tl("In-game report"):r.kind==="idea"?"💡 "+tl("Idea"):"🐞 "+tl("Bug")}</b> · ${when(r.at)} · ${esc(r.app||"?")}${r.email?` · <a href="mailto:${esc(r.email)}">${esc(r.email)}</a>`:""}</div>
+  const by={},grp=[];   // the newest of each text first; handled when all its copies are
+  rs.filter(r=>!isFb(r)).forEach(r=>{const k=(r.text||"").trim();if(by[k]){by[k].ids.push(r.id);by[k].done=by[k].done&&r.done;return}grp.push(by[k]={...r,ids:[r.id]})});
+  const open=grp.filter(g=>!g.done),shut=grp.filter(g=>g.done),one=r=>`<li class="rep${r.done?" done":""}"><div><b>${/^\[in-game !report/.test(r.text||"")?IC("gamepad-2")+" "+tl("In-game report"):r.kind==="idea"?IC("lightbulb")+" "+tl("Idea"):IC("bug")+" "+tl("Bug")}</b>${r.ids.length>1?` <span class="pill">${tln(r.ids.length,"sent {n} time","sent {n} times")}</span>`:""} · ${when(r.at)} · ${esc(r.app||"?")}${r.email?` · <a href="mailto:${esc(r.email)}">${esc(r.email)}</a>`:""}</div>
      <p>${esc(r.text||"")}</p>${r.expected?`<p class="note">${tl("Expected: {text}",{text:esc(r.expected)})}</p>`:""}<p class="note">${esc(r.page||"")}</p>
-     <div class="btns">${r.has_diag?`<button type="button" data-rdiag="${esc(r.id)}">${tl("Technical details")}</button>`:""}<button type="button" data-rdone="${esc(r.id)}" data-v="${r.done?0:1}">${r.done?tl("Reopen"):tl("Done")}</button></div><pre class="rdiag" hidden></pre></li>`;
-  const shut=rs.filter(r=>r.done).slice(0,30);
-  return `<article class="card wide" id="rp-card"><h3>${tl("Bug reports")} ${open.length?`<span class="pill strong">${tl("{n} open",{n:open.length})}</span>`:""}${itip(tl("Sent by players from their app (the \"alpha · report\" tag, the feedback after a warm-up or a match, !report on the training server), pulled every hour by the base loop while it runs."))}</h3>
-   ${open.length?`<ul class="replist">${open.slice(0,30).map(one).join("")}</ul>`:`<p class="note">${rs.length?tl("Nothing open."):tl("None yet.")}</p>`}
-   ${shut.length?setFold("set-rdone",`${tl("Done")} <span class="note">${rs.length-open.length}</span>`,`<ul class="replist">${shut.map(one).join("")}</ul>`):""}
+     <div class="btns">${r.has_diag?`<button type="button" data-rdiag="${esc(r.id)}">${tl("Technical details")}</button>`:""}<button type="button" data-rdone="${esc(r.ids.join(","))}" data-v="${r.done?0:1}">${r.done?tl("Reopen"):tl("Mark as handled")}</button></div><pre class="rdiag" hidden></pre></li>`;
+  return `<article class="card wide" id="rp-card"><h3>${tl("Bug reports")} ${open.length?`<span class="pill weak">${tl("{n} open",{n:open.length})}</span>`:""}${itip(tl("Sent by players from their app (the \"alpha · report\" tag, !report on the training server), pulled every hour by the base loop while it runs."))}</h3>
+   ${open.length?`<ul class="replist">${open.slice(0,30).map(one).join("")}</ul>`:`<p class="note">${grp.length?tl("Nothing open."):tl("None yet.")}</p>`}
+   ${shut.length?setFold("set-rdone",`${tl("Handled")} <span class="note">${shut.length}</span>`,`<ul class="replist">${shut.slice(0,30).map(one).join("")}</ul>`):""}
    <div class="btns"><button type="button" id="rp-pull">${tl("Pull now")}</button></div></article>`}
 function wireReports(v){
   $$("[data-report]",v).forEach(b=>b.onclick=()=>openReport(b.dataset.report));
-  const redo=rs=>{const k=$("#rp-card",v);if(k&&k.isConnected){k.outerHTML=reportsCard(rs);wireReports(v)}};
+  const redo=rs=>{[["#rp-card",reportsCard],["#fb-card",feedbackCard]].forEach(([id,f])=>{const k=$(id,v);if(k&&k.isConnected)k.outerHTML=f(rs)});wireReports(v)};
   const pl=$("#rp-pull",v);if(pl)pl.onclick=async()=>{pl.disabled=true;pl.textContent=tl("Pulling…");try{const r=await api("/api/reports/pull",{});redo(r);
       const k=$("#rp-pull",v);if(k)k.insertAdjacentHTML("afterend",`<span class="note"> ${tl("checked just now: {n} report(s) here",{n:(r||[]).length})}</span>`)}catch(e){pl.textContent=tl("Pull now");pl.disabled=false;pl.insertAdjacentHTML("afterend",`<span class="note"> ${tl("failed: {error}",{error:esc(e.message)})}</span>`)}};
-  $$("[data-rdone]",v).forEach(b=>b.onclick=async()=>{b.disabled=true;try{redo(await api("/api/reports/done",{id:b.dataset.rdone,done:b.dataset.v==="1"}))}catch(e){b.disabled=false}});
+  $$("[data-rdone]",v).forEach(b=>b.onclick=async()=>{b.disabled=true;let rs=null;
+    try{for(const id of b.dataset.rdone.split(","))rs=await api("/api/reports/done",{id,done:b.dataset.v==="1"});redo(rs)}catch(e){b.disabled=false}});
   $$("[data-rdiag]",v).forEach(b=>b.onclick=async()=>{const pre=b.closest("li").querySelector(".rdiag");if(!pre.hidden){pre.hidden=true;return}
     try{const r=(await (await fetch("/api/reports?id="+encodeURIComponent(b.dataset.rdiag))).json()).find(x=>x.id===b.dataset.rdiag);pre.textContent=JSON.stringify(r&&r.diag,null,1);pre.hidden=false}catch(e){}})}
 // anonymous usage statistics (05/10): a player's switch and today's counters; the coach's ranking of what players use
@@ -441,6 +472,12 @@ function setStep(id,n,st,title,state,body){const open=id in SET_OPEN?SET_OPEN[id
   return `<details class="card sstep ${st}" id="${id}" data-sstep="${id}"${open?" open":""}><summary><b class="sstep-n" aria-hidden="true">${st==="ok"?"✓":n}</b><span class="sstep-h"><span class="sstep-t">${title}</span><span class="sstep-s">${state}</span></span></summary><div class="sstep-b">${body}</div></details>`}
 const setChk=(id,on,label,tip)=>`<div class="srow chkrow"><label class="chk"><input type="checkbox" id="${id}"${on?" checked":""}> ${label}</label>${tip?itip(tip):""}</div>`;
 const setFold=(id,title,html)=>`<details class="set-more" data-fold="${id}"${FOLD_OPEN.has(id)?" open":""}><summary>${title}</summary>${html}</details>`;
+// a microphone that hears nothing (16/10): nothing at all is a mute, Windows or another app; almost nothing, another microphone
+const micWhy=p=>p?tl("Almost nothing: not the microphone you speak into, or its volume is very low (Windows: Settings › Sound › Input)."):tl("Nothing at all usually means the microphone is muted (its button: a red light on many USB microphones), Windows blocks it (Settings › Privacy › Microphone), or another app holds it alone.");
+function micLevel(v,r){const b=$("#v-lvl",v),t=$("#v-verdict",v);if(!b||!t)return;const p=Math.max(0,r.peak||0);
+  b.style.width=(p>0?Math.max(4,Math.min(100,Math.round((20*Math.log10(p)+50)*2))):0)+"%";b.className=p<0.01?"lo":"";   // -50 dBFS: empty, 0 dBFS: full
+  if(r.recording){t.className="note";t.textContent=`${r.device||""} · ${tl("level now")}`;return}
+  t.className=p<0.01?"bad":"good";t.textContent=`${r.device||""}: ${p>=0.01?tl("it hears you."):p?tl("almost silent."):tl("no sound at all.")}${p<0.01?" "+micWhy(p):""}`}
 const INPUT_S="font:14px var(--f-mono);background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:3px;padding:5px 8px";
 async function renderSettings(){
   const v=$("#v-settings");
@@ -472,7 +509,8 @@ async function renderSettings(){
        ${c2a?`<span class="btns"><button type="button" id="gsi-off">${tl("Turn detection off")}</button></span>`:gs&&gs.cfg_dir?`<span class="btns"><button type="button" class="primary" id="gsi-on">${tl("Turn detection on")}</button></span>`:`<span class="note">${tl("CS2 folder not found on this PC.")}</span>`}</div>
      <div class="srow">${sgTick(c2b)}<b>${tl("Launch option")}</b>${itip(tl("It makes CS2 write its console log (Live's numpad keys go through it) and loads Wily's key binds. Checked once CS2 has started with it."))}<span class="note">${tl("Steam › right-click <b>Counter-Strike 2</b> › <b>Properties</b> › <b>Launch options</b>:")}</span></div>
      <div class="sg-copy"><code>${SG_LAUNCH}</code><span class="btns"><button type="button" id="st-cp">${tl("Copy")}</button></span></div>
-     ${cc&&cc.bound&&!cc.tempo_bound?`<p>${tl("Numpad 4-5-6 are new: run <code>exec coach_binds</code> once more in CS2's console (your numpad 5 ran <code>bot_crouch 1</code>: it now sets a slow tempo).")}</p>`:""}
+     ${cc&&cc.bound&&!cc.tempo_bound?`<p>${tl("Numpad 4-5-6 are new: run <code>exec wily_bind</code> once more in CS2's console (your numpad 5 ran <code>bot_crouch 1</code>: it now sets a slow tempo).")}</p>`:""}
+     ${cc&&cc.bound&&cc.tempo_bound&&!cc.rt_bound?`<p>${tl("F5 is new: it throws your last grenade again in the training server's sandbox. Run <code>exec wily_bind</code> once more in CS2's console.")}</p>`:""}
      ${setChk("o-cs2",!gs||gs.open_on_cs2!==false,tl("Open Live when CS2 starts (if no Wily page is open yet)"),tl("Nothing can write in CS2's lobby chat, so Wily opens itself instead: the page first, then CS2's window comes back on top. Wily must be running: it starts with Windows if a shortcut to it is in your Startup folder (Win+R, shell:startup)."))}
      <span class="note" id="gsi-msg" role="status"></span>`);
   // 3. your matches: the history code
@@ -487,67 +525,75 @@ async function renderSettings(){
        <p class="note">${tl("Without one, Wily's website asks Steam for you. To use your own, create it on {link} (signed in to your Steam account). Domain name: write <code>localhost</code>.",{link:`<a href="${esc(L.key)}" target="_blank" rel="noopener" style="color:var(--ct)">steamcommunity.com/dev/apikey</a>`})}</p>`)}
      <div class="srow"><span class="btns"><button type="button" class="primary" id="st-save">${tl("Save and check")}</button><button type="button" class="primary" id="st-sync" ${s3?"":"disabled"}>${tl("Sync now")}</button></span><span class="note" id="st-msg" role="status"></span></div>
      ${s3?setChk("st-auto",st.auto_sync,tl("Sync automatically when the app starts, then every 30 minutes"),tl("Off: \"Update my matches\" in your menu (top right) does it when you want.")+(st.friends!=null?" "+tln(st.friends,"{n} Steam friend known (used to detect your group).","{n} Steam friends known (used to detect your group)."):"")):""}`);
-  // 4. your calls: optional, so never "to do"
-  const va=!!(vs&&vs.available),s4=!!(va&&vs.settings&&vs.settings.auto),rec=va?vs.recordings||[]:[];
+  // 4. your calls: optional ("opt" while off), "to do" when it records and its last recording heard nothing (16/10: 10 of
+  // 14 recordings at exactly 0 under a step marked done); the microphone tested here, its level shown
+  const va=!!(vs&&vs.available),auto=!!(va&&vs.settings&&vs.settings.auto),rec=va?vs.recordings||[]:[];
+  const last=rec.filter(r=>(r.duration||0)>=60).slice(0,5),mute=last.filter(r=>r.silent),deaf=auto&&!!last[0]&&last[0].silent;
   const lh=va&&(vs.live||{}).last&&vs.live.last.text?`<br><br>${tl("Last heard: \"{text}\"",{text:esc(vs.live.last.text)})}${vs.live.last.parsed?` → ${esc([vs.live.last.parsed.rush?"rush":"",vs.live.last.parsed.n||"",vs.live.last.parsed.site||"",vs.live.last.parsed.zone||"",vs.live.last.parsed.bomb?tl("bomb"):""].filter(Boolean).join(" · "))}`:` ${tl("(not a call)")}`}.`:"";
-  const step4=setStep("set-mic",4,s4?"ok":"opt",tl("Your calls (microphone)"),
-    va&&vs.recording?`<b class="bad">● ${tl("Recording")}</b>${vs.current&&vs.current.map?` · ${MAPN(vs.current.map)}`:""}`:!va?tl("unavailable on this PC"):s4?tl("records your matches · {device}",{device:esc(vs.device||tl("Windows default microphone"))}):tl("off · optional"),
+  const step4=setStep("set-mic",4,deaf?"todo":auto?"ok":"opt",tl("Your calls (microphone)"),
+    va&&vs.recording?`<b class="bad">● ${tl("Recording")}</b>${vs.current&&vs.current.map?` · ${MAPN(vs.current.map)}`:""}`:!va?tl("unavailable on this PC"):deaf?tl("your last recording heard nothing: test the microphone"):auto?tl("records your matches · {device}",{device:esc(vs.device||tl("Windows default microphone"))}):tl("off · optional"),
     `<p>${tl("Your calls, transcribed on this PC and lined up with the rounds: the Review then shows the info you gave before dying, \"where + how many\", the grenades you called, talking during a teammate's clutch, frustration.")}${itip(tl("Only your voice: with a headset, your teammates' voices don't reach your microphone. Nothing leaves the PC (folder <code>out/voice</code>, not versioned)."))}</p>
      <p class="note">${tl("<b>Only record other people with their consent</b>: recording someone's words without it is illegal in France (article 226-1 of the Code pénal) and in many other countries.")}</p>
      ${va?`${setChk("v-auto",vs.settings.auto,tl("Record automatically during my matches (with game detection)"))}
       ${setChk("v-live",(vs.live||{}).on!==false,tl("Live calls: my short calls (\"3 B\", \"rush A\", \"bomb B\", \"one Banana\") count like a tap on the T read"),tl("Short calls only (sentences are ignored), transcribed on this PC by a small model at low priority on the processor: the graphics card stays free for the game. About 2 to 3 s after you speak.")+lh)}
-      <div class="srow"><span class="f">${tl("Microphone")}</span><select id="v-dev" style="font:14px var(--f-body);background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:3px;padding:5px 8px;max-width:360px"><option value="">${tl("Windows default microphone")}</option></select></div>
+      <div class="micbox"><div class="srow"><span class="f">${tl("Microphone")}</span><select id="v-dev" style="font:14px var(--f-body);background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:3px;padding:5px 8px;max-width:360px"><option value="">${tl("Windows default microphone")}</option></select>${vs.recording?"":`<span class="btns"><button type="button" id="v-test">${tl("Test the microphone")}</button></span>`}</div>
+       <div class="vmeter-row"><div class="vmeter" aria-hidden="true"><i id="v-lvl"></i></div><span class="note" id="v-verdict" role="status">${vs.recording?tl("Recording: the bar is what it hears now."):tl("Press the button and speak for 3 seconds: nothing is recorded.")}</span></div>
+       ${mute.length?`<p class="${deaf?"bad":"note"}">${tl("{n} of your last {m} recordings heard nothing.",{n:mute.length,m:last.length})} ${micWhy(mute[0].peak||0)}</p>`:""}</div>
       ${vs.recording?`<div class="srow"><b class="bad">● ${tl("Recording")}</b><span class="note">${tl("since {date}",{date:fmtDate(vs.current.start_iso)})}</span><span class="btns"><button type="button" id="v-stop">${tl("Stop")}</button></span></div>`:""}
       ${vs.transcribing?`<p class="note"><span class="spin" aria-hidden="true"></span>${tl("Transcribing ({what}): it runs at low priority and pauses when a match starts.",{what:esc(vs.transcribing)})}</p>`:""}
-      ${rec[0]&&rec[0].silent?`<p class="bad">${tl("Your last recording is silent: check the microphone above.")}</p>`:""}
       ${rec.length?setFold("set-recs",`${tl("Recordings")} <span class="note">${rec.length}</span>`,`<div class="tbl"><table><thead><tr><th>${tl("Date")}</th><th>${tl("Map")}</th><th class="n">${tl("Length")}</th><th class="n">${tl("Rounds found")}</th><th>${tl("Transcription")}</th><th></th></tr></thead><tbody>
         ${rec.map(r=>`<tr><td>${fmtDate(r.start)}</td><td>${r.map?MAPN(r.map):"—"}${r.practice?` <span class="pill">${tl("practice")}</span>`:""}${r.team?` <span class="pill" title="${esc(r.team)}">${tl("+ team sound")}</span>`:""}</td><td class="n">${r.duration?tl("{n} min",{n:Math.round(r.duration/60)}):tl("in progress")}</td><td class="n">${r.rounds_marked||"—"}</td>
-          <td>${r.silent?`<span class="bad">${tl("silent: wrong microphone")}</span>`:r.transcribed?tl("done"):r.duration?`<button type="button" data-vtr="${r.id}">${tl("Transcribe")}</button>`:"—"}</td><td><button type="button" data-vdel="${r.id}">${tl("Delete")}</button></td></tr>`).join("")}</tbody></table></div>`)
+          <td>${r.silent?`<span class="bad" title="${esc(micWhy(r.peak||0))}">${r.peak?tl("almost silent"):tl("no sound at all")}</span>`:r.transcribed?tl("done"):r.duration?`<button type="button" data-vtr="${r.id}">${tl("Transcribe")}</button>`:"—"}</td><td><button type="button" data-vdel="${r.id}">${tl("Delete")}</button></td></tr>`).join("")}</tbody></table></div>`)
        :`<p class="note">${tl("No recording yet.")}</p>`}`
      :`<p class="note">${vs&&vs.error?tl("Microphone unavailable on this PC ({error}).",{error:esc(vs.error)}):tl("Microphone unavailable on this PC.")}</p>`}<span class="note" id="v-msg" role="status"></span>`);
-  // Live: the coach's voice, the numpad keys
-  const keys=a=>`<div class="keys">${a.map(([k,t])=>`<span class="key"><kbd>${k}</kbd>${t}</span>`).join("")}</div>`;
-  const VL=Object.entries(D.langs||{en:"English",fr:"Français"});
-  const voiceCard=`<article class="card" id="set-voice"><h3>${tl("The coach's voice")}${itip(tl("When you're frustrated (a word or a shout after your death, \"coach, I'm tilted\"), after two rounds lost dead without a kill, or when you're lost (\"what do we do\", \"coach, I'm lost\"): a few seconds during the buy time, once per round. Calm, then one thing to do this round, or a simple plan.<br><br>A voice installed on this PC (Windows: Settings › Time & language › Speech; Linux: speech-dispatcher with espeak-ng): nothing is sent anywhere. \"The app's language\": the voice of the language the app is in, else English. The browser only lets a page speak after a click on it: click Live once when you open it."))}</h3>
-    <div class="srow"><label class="chk"><input type="checkbox" id="c-voice" ${voiceOn()?"checked":""}> ${tl("Speak at the buy time")}</label><label class="chk">${tl("in")} <select id="c-lang" aria-label="${tl("The coach's language")}">${[["auto",tl("the app's language")],...VL].map(([k,x])=>`<option value="${k}" ${voicePref()===k?"selected":""}>${esc(x)}</option>`).join("")}</select></label><span class="btns"><button type="button" id="c-voice-test">${tl("Hear it")}</button></span></div>
-    ${setChk("c-info",infoOn(),tl("Say \"call it!\" when I die"),tl("Your rounds with a call before your death are won far more often."))}</article>`;
+  // Live: the numpad keys (the coach's voice gone, 20/10: "enlève le TTS sur le module live")
+  // the numpad as it is under the hand (16/10): each key where it sits, colored by what it does, the unused ones dimmed
+  const NP=[["Num"],["/"],["*"],["−",tl("clear them"),"x"],["7",tl("A site"),"s"],["8"],["9",tl("B site"),"s"],["+",0,0,"tall"],
+    ["4",tl("rush"),"t"],["5",tl("slow"),"t"],["6",tl("map control"),"t"],["1","A","d"],["2",tl("mid"),"d"],["3","B","d"],["⏎",0,0,"tall"],["0",0,0,"wide"],["."]];
   const keysCard=`<article class="card" id="set-keys"><h3>${tl("Numpad keys")}${itip(tl("On T, a key types what you pressed in the team chat: your direction and your tempo (\"A\", \"Rush B\", \"Map control, then mid\"; on A and B with CS2's own \"Go A\" / \"Go B\" from the chat wheel, the order bots follow). It tells Wily too: Live then shows the way in that wins most, its odds this round, when to be on the site and its utility, with a ping on the map. On CT, the keys only tell Wily: 1-2-3 where you play, 4-5-6 what the Ts do.<br><br>Live must be open during the match (it writes the lines). A key's file only contains its line and the chat wheel's order, never another command."))}</h3>
-    ${keys([["1","A"],["2",tl("mid")],["3","B"],["4",tl("rush")],["5",tl("slow")],["6",tl("map control")],["−",tl("clear them")]])}
-    ${keys([["7",tl("A site")],["9",tl("B site")],["+",tl("next lineup photo")]])}
-    <p class="note">${tl("7 · 9: on CT, the site you play; once the bomb is down, the site it was planted on. +: during a photo session (Prepare, lineups).")}</p></article>`;
-  const LG=Object.entries(D.langs||{en:"English"});
-  const prefCard=`<article class="card"><h3>${tl("Language and display")}</h3>
-    <div class="srow"><span class="f">${tl("Language")}</span><select id="o-lang" aria-label="${tl("The app's language")}">${[["auto",tl("Your browser's language")],...LG].map(([k,x])=>`<option value="${k}" ${(D.ui_lang||"auto")===k?"selected":""}>${esc(x)}</option>`).join("")}</select>${itip(tl("The language of the whole app: pages, analyses and the coach's voice. Your own analysis is written again in it at once (a few minutes); other players' at their next update."))}</div>
-    <div class="srow"><span class="f">${tl("Theme")}</span><span class="btns" role="group" aria-label="${tl("Theme")}">${[["dark",tl("Dark")],["light",tl("Light")],["system",tl("Your system's")]].map(([k,l])=>`<button type="button" data-theme-set="${k}" aria-pressed="${(store("theme")||"dark")===k}">${l}</button>`).join("")}</span>${itip(tl("The app's theme in this browser. Dark is the default; \"Your system's\" follows Windows."))}</div>
-    ${setChk("o-fb",!gs||gs.feedback_prompts!==false,tl("Ask me how it went after a warm-up and after a match"),tl("The alpha's feedback: a face, a few tags, a few words if you want; sent only when you press Send."))}
-    ${gs&&gs.linux?setChk("o-lxt",gs.linux_training,tl("Training server on Linux (experimental)"),tl("Its first runs on Linux: if it fails, send a report with the \"alpha · report\" tag, its log goes with it.")):""}</article>`;
+    <div class="np-wrap"><div class="numpad">${NP.map(([k,l,g,sz])=>`<span class="np np-${g||"off"}${sz?" "+sz:""}"><kbd>${k}</kbd>${l?`<small>${l}</small>`:""}</span>`).join("")}</div>
+     <ul class="np-leg"><li><i class="np-d"></i><span><b>1 · 2 · 3</b> ${tl("where you go (T) or where you play (CT)")}</span></li>
+      <li><i class="np-t"></i><span><b>4 · 5 · 6</b> ${tl("your tempo (T) or what the Ts do (CT)")}</span></li>
+      <li><i class="np-s"></i><span><b>7 · 9</b> ${tl("on CT, the site you play; once the bomb is down, the site it was planted on")}</span></li></ul></div></article>`;
+  const th0=store("theme")||"dark",lgName=(D.langs||{})[LANG]||LANG;
+  const swRow=(id,on,title,words)=>`<label class="sw-row"><input type="checkbox" role="switch" id="${id}"${on?" checked":""}><span class="sw" aria-hidden="true"></span><span class="sw-t"><b>${title}</b><small>${words}</small></span></label>`;
+  const prefCard=`<article class="card pref"><h3>${tl("Display")}</h3>
+    <div class="pref-sec"><span class="pref-h">${tl("Theme")}</span>
+     <div class="th-tiles" role="group" aria-label="${tl("Theme")}">${[["dark",tl("Dark")],["light",tl("Light")],["system",tl("Your system's")]].map(([k,l])=>`<button type="button" class="th-tile" data-theme-set="${k}" aria-pressed="${th0===k}"><span class="th-prev th-${k}" aria-hidden="true"><i></i><b></b><b></b><em></em></span><span class="th-l">${l}</span></button>`).join("")}</div>
+     <p class="note">${tl("In this browser; \"Your system's\" follows Windows.")}</p></div>
+    ${swRow("o-fb",!gs||gs.feedback_prompts!==false,tl("Ask me how it went"),tl("After a warm-up and after a match: a face, a few tags, a few words if you want. Sent only when you press Send."))}
+    ${gs&&gs.linux?swRow("o-lxt",gs.linux_training,tl("Training server on Linux (experimental)"),tl("Its first runs on Linux: if it fails, send a report with the \"alpha · report\" tag, its log goes with it.")):""}
+    ${D.local?`<div class="pref-lang"><span class="pref-h">${tl("Language")}</span><b lang="${LANG}">${esc(lgName)}</b><span class="btns"><button type="button" id="o-lang-open">${GLOBE}${tl("Change it in the bar")}</button></span></div>`:""}</article>`;
+  const left=[s1,s2,s3].filter(x=>!x).length+(deaf?1:0),outT=client?tl("What leaves this PC"):tl("The base and the players' apps");
   v.innerHTML=head+`
   ${flag==="ok"?`<div class="jobpanel" style="padding:0"><div class="in ok">${tl("Steam confirmed the sign-in.")}</div></div>`:flag==="refused"||flag==="refus"?`<div class="jobpanel" style="padding:0"><div class="in err">${tl("Steam didn't confirm the sign-in. Try again.")}</div></div>`:""}
-  <section class="set-sec"><h3 class="set-h">${tl("Setup")}${itip(tl("The setup guide's steps: a step closes once it's done; open it to change something."))}</h3><div class="ssteps">${step1}${step2}${step3}${step4}</div></section>
-  <section class="set-sec"><h3 class="set-h">${tl("Live")}</h3><div class="set-grid">${voiceCard}${keysCard}</div></section>
-  <section class="set-sec"><h3 class="set-h">${tl("This app")}</h3><div class="set-grid">${prefCard}${updateCard(up)}${reportCard()}</div></section>
-  ${client?`<section class="set-sec"><h3 class="set-h">${tl("What leaves this PC")}</h3><div class="set-grid">${shareCard(ct)}${usageCard(us)}</div></section>`
-    :`<section class="set-sec"><h3 class="set-h">${tl("The base and the players' apps")}</h3><div class="set-grid">${shareCard(ct)}${reportsCard(rs)}${usageStatsCard(us)}</div></section>`}`;
+  ${secNav([["set-s-setup",tl("Setup")],["set-s-live",tl("Live")],["set-s-app",tl("This app")],["set-s-out",outT]])}
+  <section class="set-sec" id="set-s-setup"><h3 class="set-h">${tl("Setup")} ${left?`<span class="pill weak">${tln(left,"{n} step left","{n} steps left")}</span>`:`<span class="pill strong">${tl("all set")}</span>`}${itip(tl("The setup guide's steps: a step closes once it's done; open it to change something."))}</h3><div class="ssteps">${step1}${step2}${step3}${step4}</div></section>
+  <section class="set-sec" id="set-s-live"><h3 class="set-h">${tl("Live")}</h3><div class="set-grid">${keysCard}</div></section>
+  <section class="set-sec" id="set-s-app"><h3 class="set-h">${tl("This app")}</h3><div class="set-grid">${prefCard}${updateCard(up)}${reportCard()}</div></section>
+  <section class="set-sec" id="set-s-out"><h3 class="set-h">${outT}</h3><div class="set-grid">${client?shareCard(ct)+usageCard(us):shareCard(ct)+feedbackCard(rs)+reportsCard(rs)+usageStatsCard(us)}</div></section>`;
   const sgo=$("#sg-open",v);if(sgo)sgo.onclick=()=>setupGuide(v,false);   // the three steps of the first launch, again
   const msg=$("#st-msg",v),gmsg=$("#gsi-msg",v),sid=st.steamid;
   const vmsg=$("#v-msg",v),vcall=async(path,body)=>{try{await api(path,Object.assign({sid},body||{}));renderSettings()}catch(e){if(vmsg)vmsg.textContent=e.message}};
   const va_=$("#v-auto",v);if(va_)va_.onchange=()=>vcall("/api/voice/settings",{auto:va_.checked});
   const vl=$("#v-live",v);if(vl)vl.onchange=()=>vcall("/api/voice/settings",{live:vl.checked});
-  const cvo=$("#c-voice",v);if(cvo)cvo.onchange=()=>{try{localStorage.setItem("coach_voice",cvo.checked?"on":"off")}catch(e){}};
-  const cin=$("#c-info",v);if(cin)cin.onchange=()=>{try{localStorage.setItem("coach_info",cin.checked?"on":"off")}catch(e){}};
-  const clg=$("#c-lang",v);if(clg)clg.onchange=()=>{try{localStorage.setItem("coach_lang",clg.value)}catch(e){}const t=$("#c-voice-test",v);if(t)t.textContent=tl("Hear it")};
-  const cvt=$("#c-voice-test",v);if(cvt)cvt.onclick=()=>{if(!coachSay(l=>tlv("Breathe. The last round is over. This round, {instr}.",l,{instr:tlv("play the trade, next to a teammate",l)})))cvt.textContent=voiceHelp()};   // a line the coach really says, in its language
-  const vd=$("#v-dev",v);if(vd){fetch("/api/voice/devices").then(r=>r.json()).then(list=>{if(!Array.isArray(list))return;const cur=(vs.settings||{}).device||"";
-    vd.innerHTML=`<option value="">${vs.cs2_device?tl("The same as CS2 ({name})",{name:esc(vs.cs2_device)}):tl("Windows default microphone")}</option>`+list.map(d=>`<option value="${esc(d.name)}" ${d.name===cur?"selected":""}>${esc(d.name)}${d.cs2?` ${tl("(used by CS2)")}`:d.default?` ${tl("(Windows default)")}`:""}</option>`).join("")}).catch(()=>{});
+  const vd=$("#v-dev",v);if(vd){fetch("/api/voice/devices").then(r=>r.json()).then(list=>{if(!Array.isArray(list))return;const cur=(vs.settings||{}).device||"",ch=list.findIndex(d=>d.chosen);
+    vd.innerHTML=`<option value="">${vs.cs2_device?tl("The same as CS2 ({name})",{name:esc(vs.cs2_device)}):tl("Windows default microphone")}</option>`+list.map((d,i)=>`<option value="${esc(d.name)}" ${i===ch?"selected":""}>${esc(d.name)}${d.cs2?` ${tl("(used by CS2)")}`:d.default?` ${tl("(Windows default)")}`:""}</option>`).join("")
+      +(cur&&ch<0?`<option value="${esc(cur)}" selected>${esc(cur)} ${tl("(not found on this PC)")}</option>`:"")}).catch(()=>{});
     vd.onchange=()=>vcall("/api/voice/settings",{device:vd.value||null})}
   const vst=$("#v-stop",v);if(vst)vst.onclick=()=>vcall("/api/voice/stop");
+  const vt=$("#v-test",v);if(vt)vt.onclick=async()=>{vt.disabled=true;let k=3;const say=()=>{vt.textContent=tl("Speak now… {n}",{n:k})};say();const iv=setInterval(()=>{k=Math.max(1,k-1);say()},1000);
+    try{micLevel(v,await api("/api/voice/test",{}))}catch(e){const t=$("#v-verdict",v);if(t){t.className="bad";t.textContent=e.message}}
+    clearInterval(iv);vt.disabled=false;vt.textContent=tl("Test again")};
+  const tok=S.micTok=(S.micTok||0)+1;
+  if(va&&vs.recording){const tick=async()=>{if(S.micTok!==tok||S.view!=="settings"||!$("#v-lvl",v))return;try{micLevel(v,await api("/api/voice/test",{}))}catch(e){}setTimeout(tick,1000)};tick()}
   $$("[data-vtr]",v).forEach(b=>b.onclick=()=>{b.disabled=true;vcall("/api/voice/transcribe",{id:b.dataset.vtr})});
   $$("[data-vdel]",v).forEach(b=>b.onclick=()=>{if(b.dataset.ok!=="1"){b.dataset.ok="1";b.textContent=tl("Confirm");return}vcall("/api/voice/delete",{id:b.dataset.vdel})});
   const gon=$("#gsi-on",v),goff=$("#gsi-off",v);
   if(gon)gon.onclick=async()=>{gon.disabled=true;try{gsiStatus=await api("/api/gsi/install",{});renderSettings()}catch(e){gmsg.textContent=e.message;gon.disabled=false}};
   if(goff)goff.onclick=async()=>{goff.disabled=true;try{gsiStatus=await api("/api/gsi/uninstall",{});renderSettings()}catch(e){gmsg.textContent=e.message;goff.disabled=false}};
   const cp=$("#st-cp",v);if(cp)cp.onclick=async()=>{try{await navigator.clipboard.writeText(SG_LAUNCH);cp.textContent=tl("Copied ✓")}catch(e){gmsg.textContent=tl("Select the text and copy it (Ctrl+C).")}};
-  const olg=$("#o-lang",v);if(olg)olg.onchange=async()=>{olg.disabled=true;try{const j=await api("/api/app/options",{ui_lang:olg.value});if(j.relang)try{sessionStorage.setItem("relang","1")}catch(e){}}catch(e){}location.reload()};
+  const olo=$("#o-lang-open",v);if(olo)olo.onclick=e=>{e.stopPropagation();langOpen()};   // the bar's own list (20/10)
   $("#st-save",v).onclick=async()=>{const b=$("#st-save",v);b.disabled=true;msg.textContent=tl("Checking with Steam…");
     try{const j=await api("/api/steam/credentials",{sid,api_key:$("#st-key",v).value.trim(),auth_code:$("#st-auth",v).value.trim(),known_code:$("#st-known",v).value.trim()});
       msg.textContent=j.saved.length?tl("Saved: {what}.",{what:j.saved.map(x=>({"API key":tl("the API key"),"history code":tl("the history code")})[x]||x).join(", ")}):tl("Nothing new to save.");setTimeout(renderSettings,900)}

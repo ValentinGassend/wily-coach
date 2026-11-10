@@ -1,0 +1,12 @@
+{
+ "pos_x": -2647.0,
+ "pos_y": 2592.0,
+ "scale": 4.6,
+ "levels": [
+  {
+   "key": "main",
+   "name": "Map",
+   "image": "maps/cs_italy.png"
+  }
+ ]
+}

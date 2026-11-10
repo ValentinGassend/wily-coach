@@ -75,12 +75,82 @@ function findKnown(q){const t=q.trim(),low=t.toLowerCase().replace(/\/+$/,"");co
   const van=(low.match(/\/id\/([^\/?#]+)/)||[])[1]||(!/[\/:]/.test(low)?low:null);
   for(const e of D.index){if((e.name||"").toLowerCase()===low||(van&&(e.vanity||"").toLowerCase()===van))return e.steamid}
   return null}
-function jobPanel(html,cls){const j=$("#job");j.hidden=false;const box=$(".in",j);box.className="in "+(cls||"");box.innerHTML=html+`<div><button type="button" class="close">${tl("Close")}</button></div>`;$(".close",box).onclick=()=>{j.hidden=true}}
+// the analysis's progress (16/10, the user: "beaucoup plus visuel et ux" than the server's log, then "fais-lui prendre
+// moins de place"): one line (what runs, how far, the time) over a thin bar of one segment per step (its name, result and
+// time on hover); the server's log behind "Details"
+const STEP_PLAN={import:["extract","matches","profile","plan","page"],sync:["history","download","extract","matches","profile","plan","page"],search:["lookup","download","extract","matches","profile","plan","page"],
+  again:["extract","matches","profile","plan","page"]};
+const stepName=k=>({history:tl("Steam history"),lookup:tl("Finding the player and their matches"),download:tl("Downloading the demos"),
+  extract:tl("Reading the demos"),matches:tl("Analyzing the matches"),profile:tl("Cross-match analysis"),plan:tl("Coaching plan"),page:tl("Profile page")})[k]||k;
+const durTxt=s=>{s=Math.max(0,Math.round(s));return s<60?tl("{s} s",{s}):tl("{m} min {s} s",{m:Math.floor(s/60),s:s%60})};
+let jobLogOpen=false;
+function jobSteps(j){
+  if(!Array.isArray(j.steps))return null;   // a server from before the steps (an app not restarted yet): its log only
+  const kind=/^Steam sync/.test(j.query||"")?"sync":/^Demo import/.test(j.query||"")?"import":j.view==="matches"?"again":"search";
+  const got=j.steps,by={};got.forEach(s=>by[s.key]=s);
+  const plan=[...STEP_PLAN[kind]];got.forEach((s,i)=>{if(!plan.includes(s.key))plan.splice(i?plan.indexOf(got[i-1].key)+1:0,0,s.key)});
+  const cur=got.length?got[got.length-1].key:null,ci=plan.indexOf(cur);
+  const state=(k,i)=>by[k]?(by[k].t1||!j.running?"done":"run"):(i<ci||!j.running?"skip":"todo");
+  const note=(k,s,st)=>{if(st==="skip")return tl("nothing to do");if(!s)return "";
+    if(s.note&&s.note.new!=null)return s.note.new?tln(s.note.new,"{n} new match","{n} new matches"):tl("nothing new");
+    if(s.n&&k==="page")return s.n>1?tln(s.n,"{n} profile","{n} profiles"):"";
+    if(s.n)return st!=="done"?tl("{i} of {n}",{i:s.i||0,n:s.n}):["download","extract"].includes(k)?tln(s.n,"{n} demo","{n} demos"):tln(s.n,"{n} match","{n} matches");
+    return ""};
+  return {plan,by,cur,ci,state,note}}
+function trackHtml(j){const S=jobSteps(j);if(!S)return "";const now=Date.now()/1000;
+  return `<ol class="jtrack" aria-hidden="true">${S.plan.map((k,i)=>{const s=S.by[k],st=S.state(k,i),
+    fr=st==="done"?1:st==="run"&&s&&s.n?Math.min(1,(s.i||0)/s.n):0,tip=[stepName(k),S.note(k,s,st),s?durTxt((s.t1||now)-s.t0):""].filter(Boolean).join(" · ");
+    return `<li class="${st}${st==="run"&&!(s&&s.n)?" ind":""}" title="${esc(tip)}"><i style="width:${Math.round(fr*100)}%"></i></li>`}).join("")}</ol>`}
+function curHtml(j){const S=jobSteps(j);if(!S||!S.cur)return "";const s=S.by[S.cur],nt=S.note(S.cur,s,S.state(S.cur,S.ci));
+  return `<span class="jcur">${stepName(S.cur)}${nt?` <small>${nt}</small>`:""}</span><span class="sr-only">${tl("Step {i} of {n}: {name}",{i:S.ci+1,n:S.plan.length,name:stepName(S.cur)})}</span>`}
+// the summary of a finished job: the new matches and the time it took
+function doneHtml(j){const S=jobSteps(j),h=S&&S.by.history,n=h&&h.note?h.note.new:null;
+  return `${n!=null?`<span class="jcur">${n?tln(n,"{n} new match","{n} new matches"):tl("nothing new")}</span>`:""}${j.t0&&j.t1?`<span class="jtime">${durTxt(j.t1-j.t0)}</span>`:""}`}
+const moreBtn=logs=>logs?`<button type="button" class="jmore" aria-expanded="${jobLogOpen}">${tl("Details")}</button>`:"";
+const logPre=(logs,open)=>logs?`<pre class="jlog"${open||jobLogOpen?"":" hidden"}>${logs}</pre>`:"";
+function jobPanel(html,cls){const j=$("#job");j.hidden=false;const box=$(".in",j);box.className="in "+(cls||"");
+  box.innerHTML=html+`<button type="button" class="jx" aria-label="${tl("Close")}" title="${tl("Close")}">×</button>`;$(".jx",box).onclick=()=>{j.hidden=true};
+  const mb=$(".jmore",box),pr=$(".jlog",box);
+  if(mb&&pr)mb.onclick=()=>{jobLogOpen=!jobLogOpen;pr.hidden=!jobLogOpen;mb.setAttribute("aria-expanded",String(jobLogOpen));if(jobLogOpen)pr.scrollTop=pr.scrollHeight};
+  if(pr&&!pr.hidden)pr.scrollTop=pr.scrollHeight}
+// demos given by hand (16/10: FACEIT's, while its download API waits for its approval): the account menu's Import, or
+// files dropped anywhere on the page. Each one sent in turn (its progress), then one analysis of them all
+const IMPORT_EXT=/\.(dem|zst|gz|bz2|xz|zip)$/i;
+let importNote="";
+function importDemos(list){
+  const files=[...(list||[])].filter(f=>IMPORT_EXT.test(f.name));acctClose();
+  if(!files.length){jobPanel(`<div class="jhead"><span class="jico bad" aria-hidden="true">!</span><b>${tl("No demo in these files (a .dem, or FACEIT's .dem.zst).")}</b></div>`,"err");return}
+  const ok=[],bad=[];let i=0;
+  const draw=(f,pct)=>jobPanel(`<div class="jhead"><span class="spin" aria-hidden="true"></span><b>${tl("Importing your demos…")}</b>`
+    +`<span class="jcur">${esc(f.name)} <small>${tl("{i} of {n}",{i:i+1,n:files.length})}</small></span><span class="jtime" aria-hidden="true">${pct}%</span></div>`
+    +`<ol class="jtrack" aria-hidden="true">${files.map((_,k)=>`<li class="${k<i?"done":k===i?"run":"todo"}"><i style="width:${k<i?100:k===i?pct:0}%"></i></li>`).join("")}</ol>`);
+  const errs=()=>bad.length?`<ul class="jerr">${bad.map(b=>`<li><b>${esc(b.name)}</b> · ${esc(b.error)}</li>`).join("")}</ul>`:"";
+  const finish=async()=>{
+    if(!ok.some(d=>d.new)){jobPanel(`<div class="jhead"><span class="jico${bad.length?" bad":""}" aria-hidden="true">${bad.length?"!":"✓"}</span><b>${ok.length?tln(ok.length,"{n} demo already here: nothing new to analyze.","{n} demos already here: nothing new to analyze."):tl("No demo imported.")}</b></div>${errs()}`,bad.length?"err":"ok");return}
+    try{const r=await fetch("/api/import/run",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+      if(!r.ok){const j=await r.json().catch(()=>({}));jobPanel(`<div class="jhead"><span class="jico bad" aria-hidden="true">!</span><b>${esc(j.error||tl("Error"))}</b></div>${errs()}`,"err");if(r.status===409)poll();return}
+      importNote=errs();jobFrom=S.view;poll()}
+    catch(e){jobPanel(`<div class="jhead"><span class="jico bad" aria-hidden="true">!</span><b>${tl("Wily's local server isn't responding.")}</b></div>`,"err")}};
+  const next=()=>{if(i>=files.length)return finish();const f=files[i];draw(f,0);
+    const x=new XMLHttpRequest();x.open("POST",`/api/import?name=${encodeURIComponent(f.name)}&mtime=${f.lastModified||0}`);
+    x.upload.onprogress=e=>{if(e.lengthComputable)draw(f,Math.round(95*e.loaded/e.total))};
+    x.onload=()=>{let r={};try{r=JSON.parse(x.responseText)}catch(e){}
+      if(x.status===200)ok.push(r);else bad.push({name:f.name,error:r.error||x.statusText||String(x.status)});i++;next()};
+    x.onerror=()=>{bad.push({name:f.name,error:tl("Wily's local server isn't responding.")});i++;next()};
+    x.send(f)};
+  next()}
+{const ib=$("#impbtn"),fi=$("#impfile");if(ib&&fi){ib.onclick=()=>fi.click();fi.onchange=()=>{importDemos(fi.files);fi.value=""}}}
+// a file dragged over the page: the drop zone shows (the app on this PC only: the files go to its server)
+{let n=0;const has=e=>D.local&&[...((e.dataTransfer||{}).types||[])].includes("Files"),off=()=>{n=0;document.body.classList.remove("dropping")};
+  document.addEventListener("dragenter",e=>{if(!has(e))return;n++;document.body.classList.add("dropping")});
+  document.addEventListener("dragleave",()=>{if(n&&--n===0)off()});
+  document.addEventListener("dragover",e=>{if(document.body.classList.contains("dropping"))e.preventDefault()});
+  document.addEventListener("drop",e=>{if(!document.body.classList.contains("dropping"))return;e.preventDefault();off();importDemos(e.dataTransfer.files)})}
 // the page only switches player or view for a job you started from here and while you stayed on that view:
 // a background sync, or a job finishing while you read something else, never pulls you away
 let polling=null,partialShown=null,jobFrom=null;
 const mayGo=()=>jobFrom!==null&&S.view===jobFrom;
-const openBtn=(sid,name,view)=>`<div class="btns"><button type="button" data-open="${sid}" data-view="${view}">${name?tl("Open {name}",{name:esc(name)}):tl("Open the profile")}</button></div>`;
+const openBtn=(sid,name,view)=>`<button type="button" class="jopen" data-open="${sid}" data-view="${view}">${name?tl("Open {name}",{name:esc(name)}):tl("Open the profile")}</button>`;
 function bindOpen(){$$("[data-open]",$("#job")).forEach(b=>b.onclick=async()=>{delete D.players[b.dataset.open];await setPlayer(b.dataset.open,true);go(b.dataset.view)})}
 async function startAnalysis(q,after){
   jobFrom=S.view;afterJob=after||null;   // after: what to open once done (the match of a /match/ address)
@@ -93,27 +163,28 @@ function poll(){clearTimeout(polling);polling=setTimeout(async()=>{
   const logs=(j.log||[]).slice(-60).map(esc).join("\n");
   if(j.running){
     if(j.partial&&partialShown!==j.partial&&mayGo()){partialShown=j.partial;try{D.index=await (await fetch(`index.json?t=${Date.now()}`)).json();playerOptions();delete D.players[j.partial];await setPlayer(j.partial,true);go(j.partial===D.own?"review":"analysis");jobFrom=S.view}catch(e){}}
-    jobPanel(`<div class="row"><b><span class="spin" aria-hidden="true"></span>${partialShown?tl("First preview shown. Full demo analysis running…"):j.view==="matches"?tl("Analyzing the match again…"):/^Steam sync/.test(j.query||"")?tl("Updating your matches…"):tl("Analyzing {what}…",{what:esc(j.query)})}</b><span class="note">${tl("The profile completes itself at the end (from a few seconds to a few minutes).")}</span></div><pre>${logs||tl("Starting…")}</pre>`);poll();return}
+    const steps=Array.isArray(j.steps);
+    jobPanel(`<div class="jhead"><span class="spin" aria-hidden="true"></span><b>${partialShown?tl("First preview shown. Full demo analysis running…"):j.view==="matches"?tl("Analyzing the match again…"):/^Steam sync/.test(j.query||"")?tl("Updating your matches…"):/^Demo import/.test(j.query||"")?tl("Analyzing your imported demos…"):tl("Analyzing {what}…",{what:esc(j.query)})}</b>${curHtml(j)}<span class="jtime" aria-hidden="true">${j.t0?durTxt(Date.now()/1000-j.t0):""}</span>${steps?moreBtn(logs):""}</div>${trackHtml(j)}${logPre(logs||tl("Starting…"),!steps)}`);poll();return}
   $("#qbtn").disabled=false;const go_=mayGo(),aj=afterJob;jobFrom=null;afterJob=null;
-  if(j.error){updFrom=null;const ub=$("#updbtn");if(ub)ub.disabled=false;jobPanel(`<b>${esc(j.error)}</b><pre>${logs}</pre>`,"err");return}
+  if(j.error){updFrom=null;const ub=$("#updbtn");if(ub)ub.disabled=false;jobPanel(`<div class="jhead"><span class="jico bad" aria-hidden="true">!</span><b>${esc(j.error)}</b>${moreBtn(logs)}</div>${trackHtml(j)}${logPre(logs)}`,"err");return}
   if(j.players&&j.players.length){D.index=await (await fetch(`index.json?t=${Date.now()}`)).json();playerOptions();
     const nm=((j.query||"").match(/CSGO(-[\w]{5}){5}/g)||[]).length,ps=[...j.players].sort((a,b)=>(b.steamid===D.own)-(a.steamid===D.own)),
       btn=p=>`<button type="button" data-mp="${p.steamid}">${esc(p.name)}</button>`;
-    jobPanel(`<b>${nm>1?tl("{n} players analyzed in these {m} matches.",{n:j.players.length,m:nm}):tl("{n} players analyzed in this match.",{n:j.players.length})}</b><div class="btns">${ps.slice(0,10).map(btn).join("")}</div>
-      ${ps.length>10?`<details><summary style="cursor:pointer" class="note">${tl("The other {n} players",{n:ps.length-10})}</summary><div class="btns">${ps.slice(10).map(btn).join("")}</div></details>`:""}<pre>${logs}</pre>`,"ok");
+    jobPanel(`<div class="jhead"><span class="jico" aria-hidden="true">✓</span><b>${nm>1?tl("{n} players analyzed in these {m} matches.",{n:j.players.length,m:nm}):tl("{n} players analyzed in this match.",{n:j.players.length})}</b>${doneHtml(j)}${moreBtn(logs)}</div><div class="btns">${ps.slice(0,10).map(btn).join("")}</div>
+      ${ps.length>10?`<details><summary style="cursor:pointer" class="note">${tl("The other {n} players",{n:ps.length-10})}</summary><div class="btns">${ps.slice(10).map(btn).join("")}</div></details>`:""}${logPre(logs)}`,"ok");
     $$("[data-mp]",$("#job")).forEach(b=>b.onclick=()=>{delete D.players[b.dataset.mp];setPlayer(b.dataset.mp,true).then(()=>go("analysis"))});
     if(aj&&go_)aj();return}
   if(j.steamid&&j.view==="matches"){try{D.index=await (await fetch(`index.json?t=${Date.now()}`)).json();playerOptions();delete D.players[j.steamid];   // a re-analysis: back on that match
       if(go_){await setPlayer(j.steamid,true);const i=P().matches.findIndex(x=>x.id===j.match);S.match=i<0?0:i;S.mpin=i>=0;go("matches")}
-      jobPanel(`${tl("<b>The match is analyzed again.</b> Profile, plan and in-game sheet updated.")}${go_?"":openBtn(j.steamid,null,"matches")}<pre>${logs}</pre>`,"ok");bindOpen()}
-    catch(e){jobPanel(`<b>${tl("The match could not be shown.")}</b><pre>${logs}</pre>`,"err")}return}
+      jobPanel(`<div class="jhead"><span class="jico" aria-hidden="true">✓</span><span>${tl("<b>The match is analyzed again.</b> Profile, plan and in-game sheet updated.")}</span>${doneHtml(j)}${go_?"":openBtn(j.steamid,null,"matches")}${moreBtn(logs)}</div>${logPre(logs)}`,"ok");bindOpen()}
+    catch(e){jobPanel(`<div class="jhead"><span class="jico bad" aria-hidden="true">!</span><b>${tl("The match could not be shown.")}</b>${moreBtn(logs)}</div>${logPre(logs)}`,"err")}return}
   if(j.steamid){try{D.index=await (await fetch(`index.json?t=${Date.now()}`)).json();playerOptions();delete D.players[j.steamid];
       const upd=updFrom;updFrom=null;const ub=$("#updbtn");if(ub)ub.disabled=false;
-      if(upd&&/(^|\D)0 new match/.test((j.log||[]).slice(-3).join(" "))&&!(j.log||[]).some(l=>/demo\(s\) from Valve|Analyzing/.test(l))){if(S.player===j.steamid)await setPlayer(j.steamid,true);go(upd);jobPanel(tl("<b>Up to date</b>: no new match since the last analysis."),"ok");return}
+      if(upd&&/(^|\D)0 new match/.test((j.log||[]).slice(-3).join(" "))&&!(j.log||[]).some(l=>/demo\(s\) from Valve|Analyzing/.test(l))){if(S.player===j.steamid)await setPlayer(j.steamid,true);go(upd);jobPanel(`<div class="jhead"><span class="jico" aria-hidden="true">✓</span><span>${tl("<b>Up to date</b>: no new match since the last analysis.")}</span>${doneHtml(j)}</div>`,"ok");return}
       const e=(D.index||[]).find(x=>x.steamid===j.steamid)||{},view=upd||(j.steamid===D.own?"review":"analysis");
       if(go_){await setPlayer(j.steamid,true);S.map=null}
-      jobPanel(`<b>${tl("{name} is analyzed.",{name:esc(e.name||j.steamid)})}</b> ${e.light?tl("Light profile (Leetify stats, no demo available)."):e.n!=null?tln(e.n,"{n} demo analyzed.","{n} demos analyzed."):""}${go_?"":openBtn(j.steamid,e.name,view)}<pre>${logs}</pre>`,"ok");bindOpen();if(go_)go(view)}
-    catch(e){jobPanel(`<b>${tl("Nothing to show for this player.")}</b><pre>${logs}</pre>`,"err")}}},1000)}
+      jobPanel(`<div class="jhead"><span class="jico" aria-hidden="true">✓</span><b>${tl("{name} is analyzed.",{name:esc(e.name||j.steamid)})}</b><span class="note">${e.light?tl("Light profile (Leetify stats, no demo available)."):e.n!=null?tln(e.n,"{n} demo analyzed.","{n} demos analyzed."):""}</span>${doneHtml(j)}${go_?"":openBtn(j.steamid,e.name,view)}${moreBtn(logs)}</div>${importNote}${logPre(logs)}`,"ok");importNote="";bindOpen();if(go_)go(view)}
+    catch(e){jobPanel(`<div class="jhead"><span class="jico bad" aria-hidden="true">!</span><b>${tl("Nothing to show for this player.")}</b>${moreBtn(logs)}</div>${logPre(logs)}`,"err")}}},1000)}
 $("#search").addEventListener("submit",async e=>{e.preventDefault();const q=$("#q").value.trim();if(!q)return;acctClose();
   const ps=await loadPros(),ql=q.toLowerCase(),idm=(q.match(/7656\d{13}/)||[])[0];
   const pro=ps.find(x=>x.handle.toLowerCase()===ql||x.steamid===idm);
@@ -121,7 +192,10 @@ $("#search").addEventListener("submit",async e=>{e.preventDefault();const q=$("#
   const known=findKnown(q);
   if(known){const v0=S.view;await setPlayer(known);$("#job").hidden=true;$("#q").value="";
     go(known===D.own?"review":["profile","matches","maps","analysis","midround","progress","routine"].includes(v0)?v0:"profile");
-    if(D.local){jobPanel(`<b>${tl("{name} is already analyzed.",{name:esc(P().name)})}</b> ${tl("To fetch their new matches:")} <button type="button" class="close" id="refresh">${tl("Update")}</button>`,"ok");$("#refresh").onclick=()=>startAnalysis(q)}
+    if(D.local){const e=IDX()[known]||{};   // one line, like the analyses' panel (16/10): who, how much, how recent, the update
+      jobPanel(`<div class="jhead"><span class="jico" aria-hidden="true">✓</span><b>${tl("{name} is already analyzed.",{name:esc(P().name)})}</b>`
+        +`<span class="note">${[e.n?tln(e.n,"{n} demo","{n} demos"):"",e.last?tl("last match {date}",{date:fmtDate(e.last)}):""].filter(Boolean).join(" · ")}</span>`
+        +`<button type="button" class="jopen" id="refresh">${known===D.own?tl("↻ Update my matches"):tl("↻ Update their matches")}</button></div>`,"ok");$("#refresh").onclick=()=>startAnalysis(q)}
     return}
   if(D.local){partialShown=null;startAnalysis(q);return}
   const local=`http://127.0.0.1:8765/?q=${encodeURIComponent(q)}#ingame`;
@@ -133,7 +207,7 @@ $("#search").addEventListener("submit",async e=>{e.preventDefault();const q=$("#
 const RENDER={ingame:renderIngame,prepare:renderPrepare,review:renderReview,profile:renderProfile,analysis:renderAnalysis,routine:renderRoutine,midround:renderMidround,progress:renderProgress,team:renderTeam,matches:renderMatches,maps:renderMaps,players:renderPlayers,pros:renderPros,settings:renderSettings};
 // The addresses (07/10, the user: "rends les URLs et la gestion de la navigation par URL plus UX"): the menus' own words,
 // yours short, another player's the same under /player/<steamid>, and what you chose in them:
-//   /review[?period=7d|week|month|30d] · /profile · /profile/reads · /profile/mid-round · /profile/maps/<map> ·
+//   /review[?period=7d|week|month|30d|all] · /profile · /profile/reads · /profile/mid-round · /profile/maps/<map> ·
 //   /profile/weapons · /profile/habits · /matches[/<share code>] · /prepare · /live · /settings
 //   /player/<steamid>[/<the same>] (their Profile first)
 // Older ones still open: /player/<steamid>/<view> (analysis, midround, progress, routine, ingame...), /match/<code>[?as=],
@@ -186,7 +260,7 @@ async function route(){
   if(seg[0]==="profile"){v=seg[1]?SLUGV["profile/"+seg[1]]||null:"profile";if(v==="maps"&&seg[2])S.cmapSlug=seg[2]}
   else if(seg[0]==="matches"){if(seg[1])return openMatch(seg[1],sid);v="matches"}
   else if(seg[0]){const o=ALIAS[seg[0]]||seg[0];v=SLUGV[o]||(RENDER[o]&&!GLOBAL.includes(o)?o:null)}   // review, prepare, live; analysis, midround, ingame…
-  if(v==="review"||(!v&&!seg.length&&homeView(sid)==="review")){const per=qs.get("period");store("revper",["7d","week","month","30d"].includes(per)?per:"session")}   // the address says the period (back and forward too)
+  if(v==="review"||(!v&&!seg.length&&homeView(sid)==="review")){const per=qs.get("period");store("revper",["7d","week","month","30d","all"].includes(per)?per:"session")}   // the address says the period (back and forward too)
   if(seg.length&&!v&&!hv)return notYet(tl("Nothing at this address: {path}.",{path:esc(path)}));
   S.view=hv||v||homeView(sid);return setPlayer(sid)}
 // /match/<id or share code>: that match, seen as the player of the address (?as=), else you, else an analyzed player in it

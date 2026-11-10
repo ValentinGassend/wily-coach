@@ -17,7 +17,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # run as a script: the root, for wily
 
 from wily.core import config
-from website import langs
+from website import extra, langs
 
 HERE = config.HERE
 OUT = os.path.join(HERE, "dist", "site_wily")
@@ -33,12 +33,14 @@ LANG_NAME = {"en": "English", "fr": "Français", "de": "Deutsch", "ru": "Рус�
 FILES = {"home": {"en": "index.html", "fr": "fr.html", **{l: f"{l}.html" for l in ("de", "ru", "pt", "es", "zh")}},
          "privacy": {"en": "privacy.html", "fr": "confidentialite.html", **{l: f"{l}-privacy.html" for l in ("de", "ru", "pt", "es", "zh")}},
          "terms": {"en": "terms.html", "fr": "conditions.html", **{l: f"{l}-terms.html" for l in ("de", "ru", "pt", "es", "zh")}}}
+for _k, _by in extra.PAGES.items():   # 03/11: the comparison and the guide, English and French
+    FILES[_k] = {l: v[0] for l, v in _by.items()}
 HOST = ("Infomaniak Network SA, Rue Eugène-Marziano 25, 1227 Les Acacias (GE), Switzerland · +41 22 820 35 44 · "
         "https://www.infomaniak.com")
 
 CSS = """:root{--bg:#0d1117;--panel:#151b23;--ink:#e6edf3;--muted:#8b949e;--line:#2a313c;--ct:#5aa9ff;--t:#f0b23a;--good:#3ba55d;
---f-display:"Barlow Condensed",system-ui,sans-serif;--f-body:"IBM Plex Sans",system-ui,sans-serif;--f-mono:"JetBrains Mono",ui-monospace,Consolas,monospace}
-@media (prefers-color-scheme:light){:root{--bg:#f6f7f9;--panel:#fff;--ink:#14181f;--muted:#5b6470;--line:#d9dee5;--ct:#1f6fd1;--t:#a86b00}}
+--on-t:#14181f;--f-display:"Barlow Condensed",system-ui,sans-serif;--f-body:"IBM Plex Sans",system-ui,sans-serif;--f-mono:"JetBrains Mono",ui-monospace,Consolas,monospace}
+@media (prefers-color-scheme:light){:root{--bg:#f6f7f9;--panel:#fff;--ink:#14181f;--muted:#5b6470;--line:#d9dee5;--ct:#1f6fd1;--t:#885d11;--good:#267449;--on-t:#fff}}
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 var(--f-body)}
 a{color:var(--ct)}a:hover{text-decoration-thickness:2px}
@@ -95,26 +97,218 @@ UI = {"en": {"dl": "Download", "how": "How it works", "priv": "Privacy", "terms"
       **langs.UI}
 
 
+# 03/11, search (the research of that day): "Wily" alone is a common word and a Mega Man villain, "CS2 coach" alone finds pro
+# teams' coaches; one fixed name everywhere, and the home's title says what only Wily does (bots replay your real deaths)
+NAME = "Wily CS2 Coach"
+TITLE_HOME = {"en": "Wily CS2 Coach · free CS2 coach, bots replay your deaths",
+              "fr": "Wily CS2 Coach · coach CS2 gratuit, des bots rejouent tes morts",
+              "de": "Wily CS2 Coach · kostenloser CS2-Coach, Bots spielen deine Tode nach",
+              "ru": "Wily CS2 Coach · бесплатный коуч по CS2: боты повторяют твои смерти",
+              "pt": "Wily CS2 Coach · coach de CS2 grátis, bots repetem suas mortes",
+              "es": "Wily CS2 Coach · coach de CS2 gratis, bots repiten tus muertes",
+              "zh": "Wily CS2 Coach · 免费CS2教练，机器人重现你的阵亡"}
+DESC_HOME = {"en": "Wily CS2 Coach is free and open source: bots replay the duels you lost in your real CS2 matches, "
+                   "live advice on a second screen, and a review of your demos.",
+             "fr": "Wily CS2 Coach, gratuit et open source : des bots rejouent les duels perdus de tes vrais matchs CS2, "
+                   "des conseils en direct et l'analyse de tes démos."}
+# the search engines' own proof of the site, on the home (03/11: Bing Webmaster Tools; Google is verified by the domain's DNS)
+VERIFY = '<meta name="msvalidate.01" content="3B828A5E51D4296241956ED47442A678">'
+MORE = {"en": {"compare": "Compare", "guide": "Practise your lost duels"},
+        "fr": {"compare": "Comparatif", "guide": "Rejouer tes duels perdus"}}
+HL = {"zh": "zh-Hans"}   # hreflang's codes (03/11: Google asks zh-Hans for simplified Chinese, not zh or zh-CN)
+OG_LOCALE = {"en": "en_US", "fr": "fr_FR", "de": "de_DE", "ru": "ru_RU", "pt": "pt_BR", "es": "es_ES", "zh": "zh_CN"}
+
+
+def url(f):
+    """A page's one address (03/11, search engines: the home is "/", never "/index.html" too)."""
+    return f"{SITE}/" if f == "index.html" else f"{SITE}/{f}"
+
+
+def lk(f):
+    """A link to a page: the English home as "./" (its one address, "/"), the others by their file."""
+    return "./" if f == "index.html" else f
+
+
 def page(lang, title, body, here, desc):
     t = UI[lang]
     kind = next((k for k, fs in FILES.items() if here in fs.values()), None)   # None: the licenses page (English only)
-    home, pp, tt = FILES["home"][lang], FILES["privacy"][lang], FILES["terms"][lang]
+    home, pp, tt = lk(FILES["home"][lang]), FILES["privacy"][lang], FILES["terms"][lang]
     cur = lambda f: ' aria-current="page"' if f == here else ""
-    alts = "".join(f'<link rel="alternate" hreflang="{l}" href="{SITE}/{FILES[kind][l]}">' for l in LANGS) if kind else ""
-    menu = "".join(f'<li><a href="{FILES[kind or "home"][l]}" hreflang="{l}" lang="{l}"{cur(FILES[kind or "home"][l])}>{LANG_NAME[l]}</a></li>' for l in LANGS)
+    # each page's own address and its six others, the English one for any other language (03/11: search engines, Google's
+    # hreflang rules: every version lists all, itself included, and x-default)
+    have = [l for l in LANGS if kind and l in FILES[kind]]
+    alts = ("".join(f'<link rel="alternate" hreflang="{HL.get(l, l)}" href="{url(FILES[kind][l])}">' for l in have)
+            + f'<link rel="alternate" hreflang="x-default" href="{url(FILES[kind]["en"])}">') if kind else ""
+    more = "".join(f'<a href="{FILES[k][lang]}">{MORE[lang][k]}</a> · ' for k in extra.PAGES if lang in FILES[k] and lang in MORE)
+    og = (f'<link rel="canonical" href="{url(here)}"><meta name="theme-color" content="#0d1117">'
+          f'<meta property="og:type" content="website"><meta property="og:site_name" content="{NAME}">'
+          f'<meta property="og:title" content="{html.escape(title)}"><meta property="og:description" content="{html.escape(desc)}">'
+          f'<meta property="og:url" content="{url(here)}"><meta property="og:locale" content="{OG_LOCALE[lang]}">'
+          f'<meta property="og:image" content="{SITE}/media/deaths.jpg"><meta property="og:image:width" content="1440">'
+          f'<meta property="og:image:height" content="810"><meta name="twitter:card" content="summary_large_image">')
+    to = lambda l: FILES[kind].get(l) or FILES["home"][l] if kind else FILES["home"][l]   # a language without the page: its home
+    menu = "".join(f'<li><a href="{lk(to(l))}" hreflang="{HL.get(l, l)}" lang="{l}"{cur(to(l))}>{LANG_NAME[l]}</a></li>' for l in LANGS)
     return f"""<!doctype html>
 <html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{html.escape(title)}</title><meta name="description" content="{html.escape(desc)}">{alts}
-<link rel="icon" href="assets/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="assets/site.css"></head>
-<body><header class="top"><div class="wrap"><a class="brand" href="{home}">Wily</a>
+<title>{html.escape(title)}</title><meta name="description" content="{html.escape(desc)}">{alts}{og}{VERIFY if here == 'index.html' else ''}
+<link rel="icon" href="favicon.ico" sizes="48x48"><link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png"><link rel="stylesheet" href="assets/site.css"><script src="assets/site.js" defer></script></head>
+<body>{ICONS}<header class="top"><div class="wrap"><a class="brand" href="{home}">Wily</a>
 <nav class="top" aria-label="Site"><a href="{home}#download">{t['dl']}</a><a href="{home}#how">{t['how']}</a>
 <a href="{pp}"{cur(pp)}>{t['priv']}</a><a href="{tt}"{cur(tt)}>{t['terms']}</a>
-<details class="langs"><summary aria-label="{t['lang']}">🌐 {LANG_NAME[lang]}</summary><ul>{menu}</ul></details></nav></div></header>
+<details class="langs"><summary aria-label="{t['lang']}">{IC("globe")} {LANG_NAME[lang]}</summary><ul>{menu}</ul></details></nav></div></header>
 <main class="wrap">{body}</main>
 <footer><div class="wrap"><span>Wily · {PUBLISHER} · <a href="mailto:{CONTACT}">{CONTACT}</a></span>
-<span><a href="{pp}">{t['priv']}</a> · <a href="{tt}">{t['terms']}</a> · <a href="licenses.html">{t['lic']}</a></span>
+<span>{more}<a href="{pp}">{t['priv']}</a> · <a href="{tt}">{t['terms']}</a> · <a href="licenses.html">{t['lic']}</a></span>
 <span>{t['valve']}</span></div></footer>
 </body></html>
+"""
+
+
+# the icons (03/11, the site's rework with ui-ux-pro-max: SVG, never emoji): Lucide's (ISC, its license kept in the file),
+# website/icons.html made from tools/icons_build.icon(), in the page itself (nothing from another server)
+ICONS = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons.html"), encoding="utf-8").read()
+IC = lambda n: f'<svg class="ic" aria-hidden="true" focusable="false"><use href="#i-{n}"/></svg>'
+
+SITE_JS = """// the videos still for who asks for less motion (03/11; a file: the site's CSP refuses inline scripts)
+if (matchMedia("(prefers-reduced-motion: reduce)").matches)
+  for (const v of document.querySelectorAll("video[autoplay]")) { v.removeAttribute("autoplay"); v.pause(); v.controls = true; }
+"""
+
+CSS_HOME = """.wrap{max-width:1120px}
+.sprite{position:absolute;width:0;height:0;overflow:hidden}
+body{background:radial-gradient(1100px 520px at 88% -8%,color-mix(in srgb,var(--ct) 16%,transparent),transparent 62%),radial-gradient(800px 440px at -8% 6%,color-mix(in srgb,var(--t) 10%,transparent),transparent 60%),var(--bg);background-repeat:no-repeat}
+.ic{width:1.1em;height:1.1em;vertical-align:-.18em;flex-shrink:0;display:inline-block;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+a,summary,.btn{transition:color .15s,background-color .15s,border-color .15s,transform .15s,box-shadow .15s}
+a:focus-visible,summary:focus-visible,.btn:focus-visible{outline:2px solid var(--ct);outline-offset:3px;border-radius:4px}
+summary{cursor:pointer}
+.hero{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.12fr);gap:44px;align-items:center;margin:52px 0 12px}
+.hero h1{margin:0 0 14px}.hero h1 .h1sub{display:block;font-size:.55em;color:var(--t);margin-top:6px}.hero .lede{margin:0;font-size:20px;color:var(--ink);opacity:.86}
+.hero .cta{margin:28px 0 0}.hero .cta .note{flex-basis:100%}
+.hero figure{margin:0}.hero video{display:block;width:100%;height:auto;border-radius:12px;border:1px solid var(--line);background:var(--panel);box-shadow:0 24px 60px -24px rgba(0,0,0,.55)}
+.hero figcaption{color:var(--muted);font-size:14px;margin-top:10px}
+.btn{display:inline-flex;align-items:center;gap:10px;background:var(--t);color:var(--on-t);font:700 17px var(--f-body);padding:14px 24px;border-radius:8px;text-decoration:none;box-shadow:0 8px 24px -10px color-mix(in srgb,var(--t) 70%,transparent)}
+.btn:hover{opacity:1;transform:translateY(-1px);box-shadow:0 12px 28px -10px color-mix(in srgb,var(--t) 80%,transparent)}
+.btn .ic{width:20px;height:20px}
+.moments{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:40px}
+.card{border-radius:10px;transition:border-color .15s}.card:hover{border-color:color-mix(in srgb,var(--ct) 45%,var(--line))}
+.badge{display:inline-grid;place-items:center;width:40px;height:40px;border-radius:10px;margin:0 10px 12px 0;vertical-align:middle;color:var(--ct);background:color-mix(in srgb,var(--ct) 14%,transparent)}
+.badge+.eyebrow{display:inline-block;vertical-align:middle;margin-bottom:12px}
+.badge .ic{width:22px;height:22px}
+.moments .card:nth-child(2) .badge,.trust .card:nth-child(3) .badge{color:var(--t);background:color-mix(in srgb,var(--t) 14%,transparent)}
+.moments .card:nth-child(3) .badge,.trust .card:nth-child(2) .badge{color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent)}
+.shots.three{grid-template-columns:repeat(3,minmax(0,1fr))}.shots video,.shots img{border-radius:10px}
+ol.steps.cards{list-style:none;padding:0;max-width:none;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;counter-reset:st}
+ol.steps.cards li{counter-increment:st;margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+ol.steps.cards li::before{content:counter(st);display:grid;place-items:center;width:32px;height:32px;border-radius:50%;margin-bottom:10px;font:700 17px var(--f-display);color:var(--on-t);background:var(--t)}
+.dl{margin-top:56px;padding:28px 30px;border-radius:14px;border:1px solid color-mix(in srgb,var(--t) 40%,var(--line));background:linear-gradient(160deg,color-mix(in srgb,var(--t) 9%,var(--panel)),var(--panel) 55%)}
+.dl h2{margin:0 0 4px}.dl .cta{margin:16px 0 10px}
+.doc.wide{max-width:none}.tablewrap{overflow-x:auto;margin:18px 0}
+table.cmp{border-collapse:collapse;width:100%;min-width:760px;font-size:15px}
+table.cmp th,table.cmp td{border-bottom:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top}
+table.cmp thead th{font:600 12px var(--f-mono);text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+table.cmp tr.me{background:color-mix(in srgb,var(--t) 9%,transparent)}table.cmp tbody th{font-family:var(--f-display);font-size:18px}
+.more{display:flex;gap:10px 22px;flex-wrap:wrap;margin:22px 0 0;font-weight:500}
+@media (max-width:900px){.hero{grid-template-columns:1fr;gap:28px;margin-top:36px}.moments,.shots.three,ol.steps.cards{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+"""
+
+
+def jsonld(lang, rel, desc, h):
+    """schema.org for the home (03/11, search engines and AI answers): the site's name (WebSite, for the name shown in
+    results), the app (SoftwareApplication: free, its version, its systems, its code) and the hero's video (VideoObject).
+    No rating: there is none to give."""
+    figs = re.findall(r"<figure>(.*?)</figure>", h, re.S)
+    cap = re.sub(r"<[^>]+>", "", re.search(r"<figcaption>(.*?)</figcaption>", figs[0], re.S).group(1)).strip() if figs else ""
+    name = re.sub(r"<[^>]+>", "", (re.search(r"<b>(.*?)</b>", figs[0]) or [None, "Wily"])[1]).strip(" .。") if figs else "Wily"
+    mp4 = os.path.join(HERE, "docs", "media", "deaths.mp4")
+    up = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(os.path.getmtime(mp4))) if os.path.exists(mp4) else None
+    app = {"@type": "SoftwareApplication", "@id": f"{SITE}/#app", "name": NAME, "alternateName": ["Wily", "Wily coach"],
+           "url": url(FILES["home"][lang]), "description": desc, "applicationCategory": "GameApplication",
+           "applicationSubCategory": "Counter-Strike 2 coaching", "operatingSystem": "Windows 10, Windows 11, Linux",
+           "offers": {"@type": "Offer", "price": "0", "priceCurrency": "EUR"}, "isAccessibleForFree": True,
+           "license": "https://www.apache.org/licenses/LICENSE-2.0", "inLanguage": list(LANGS),
+           "screenshot": [f"{SITE}/media/prepare.jpg", f"{SITE}/media/live.jpg", f"{SITE}/media/training.jpg"],
+           "author": {"@type": "Person", "name": PUBLISHER}, "sameAs": [GITHUB]}
+    if rel:
+        app["softwareVersion"] = rel.get("app")
+        app["datePublished"] = time.strftime("%Y-%m-%d", time.localtime(rel["released"])) if rel.get("released") else None
+        f = (rel.get("installer") or rel.get("setup") or {}).get("file")
+        if f:
+            app["downloadUrl"] = f"{SITE}/releases/{f}"
+    # the site's name on its root page only (Google's site names), the app on each home
+    graph = ([{"@type": "WebSite", "@id": f"{SITE}/#website", "url": f"{SITE}/", "name": NAME, "alternateName": "Wily",
+               "inLanguage": list(LANGS)}] if lang == "en" else []) + [{k: v for k, v in app.items() if v is not None}]
+    if up and cap:
+        graph.append({"@type": "VideoObject", "name": name, "description": cap, "thumbnailUrl": f"{SITE}/media/deaths.jpg",
+                      "contentUrl": f"{SITE}/media/deaths.mp4", "uploadDate": up, "inLanguage": lang})
+    data = json.dumps({"@context": "https://schema.org", "@graph": graph}, ensure_ascii=False).replace("</", "<\\/")
+    return f'<script type="application/ld+json">{data}</script>'
+
+
+def media_size(name):
+    """(width, height) of a picture of docs/media, None when unknown."""
+    try:
+        from PIL import Image
+        with Image.open(os.path.join(HERE, "docs", "media", name)) as im:
+            return im.size
+    except Exception:
+        return None
+
+
+def sized(fig):
+    """A figure's picture or video with its width and height (03/11: no layout shift while it loads)."""
+    def add(m):
+        size = media_size(m.group(2))
+        return m.group(0) if not size or " width=" in m.group(0) else f'{m.group(0)} width="{size[0]}" height="{size[1]}"'
+    fig = re.sub(r'<video src="media/\w+\.mp4" poster="(media/)(\w+\.jpg)"', add, fig)
+    return re.sub(r'<img src="(media/)(\w+\.jpg)"', add, fig)
+
+
+def relayout(lang, h):
+    """The home page laid out again (03/11, the user: "retravaille le site wily" with ui-ux-pro-max), from each language's own
+    page (the seven share one structure: nothing translated twice): the hero is the promise, the download button and the
+    replayed deaths side by side; the three moments with their icons; the other pictures; the steps as cards; fair play;
+    the download again at the end with its notes (SmartScreen, SHA-256, the zip, Linux, the code), off the hero. The lede
+    keeps its first two sentences: the rest is said once below (the moments, the base under the button, the alpha)."""
+    def one(pat, src=h):
+        m = re.search(pat, src, re.S)
+        return m.group(1) if m else ""
+    h1 = one(r"<h1>(.*?)</h1>")
+    lede = one(r'<p class="lede">(.*?)</p>').strip()
+    sents = [x for x in re.split(r"(?<=[.!?。！？])\s*", lede) if x]
+    # the H1 says what it is (its first sentence, "Your CS2 coach.", in each language), the lede the answer that follows
+    # (03/11, search: a keyword in the H1; AI answers take a page's first 40-60 words)
+    tag = sents[0] if sents else ""
+    lead = ("" if lang == "zh" else " ").join(sents[1:3] if len(sents) > 2 else sents[:2])
+    dl = one(r'<section id="download">(.*?)</section>')
+    cta = one(r'(<div class="cta">.*?</div>)', dl)
+    notes = dl.replace(cta, "", 1)
+    btn = one(r'(<a class="btn".*?</a>|<span class="btn soon">.*?</span>)', cta)
+    btn_i = re.sub(r'(<a class="btn"[^>]*>)', lambda m: m.group(1) + IC("download"), btn, count=1)
+    cta = cta.replace(btn, btn_i, 1)
+    grids = re.findall(r'<div class="grid">(.*?)</div>', h, re.S)
+    cards = [re.findall(r'<article class="card">(.*?)</article>', g, re.S) for g in grids]
+    h2 = re.findall(r"<h2(?: id=\"\w+\")?>(.*?)</h2>", h)
+    figs = re.findall(r"<figure>(.*?)</figure>", h, re.S)
+    steps = one(r'<ol class="steps">(.*?)</ol>')
+    req = one(r'</ol>\s*<p class="note">(.*?)</p>')
+    if len(cards) < 2 or len(cards[0]) < 3 or len(cards[1]) < 3 or len(h2) < 3 or len(figs) < 4 or not steps:
+        return h   # not the structure it knows: the page as it was
+    badge = lambda n: f'<span class="badge">{IC(n)}</span>'
+    moments = "".join(f'<article class="card">{badge(i)}{c}</article>' for i, c in zip(("radio", "crosshair", "chart-line"), cards[0]))
+    trust = "".join(f'<article class="card">{badge(i)}{c}</article>' for i, c in zip(("shield-check", "hard-drive", "flask-conical"), cards[1]))
+    return f"""
+<section class="hero"><div><h1>{h1} <span class="h1sub">{tag}</span></h1><p class="lede">{lead}</p>{cta}</div><figure>{sized(figs[0])}</figure></section>
+<div class="moments">{moments}</div>
+<h2 id="see">{h2[0]}</h2>
+<div class="shots three">{"".join(f"<figure>{sized(f)}</figure>" for f in figs[1:4])}</div>
+<h2 id="how">{h2[1]}</h2>
+<ol class="steps cards">{steps}</ol>
+<p class="note">{req}</p>
+<h2>{h2[2]}</h2>
+<div class="grid trust">{trust}</div>
+<section id="download" class="dl"><h2>{UI[lang]["dl"]}</h2><div class="cta">{btn_i}</div>{notes}</section>
 """
 
 
@@ -185,11 +379,11 @@ def linux_note(rel, lang):
 HOME = {
 "en": lambda rel: f"""
 <h1>Hi, I'm Wily.</h1>
-<p class="lede">Your CS2 coach, on your second screen. I replay your real deaths with bots so you can take the duel again, give you live advice during your matches, and tell you clearly what to fix after. I learn from your demos and from a base of thousands of matches. Free and open source alpha for Windows and Linux: the first version open to all, expect rough edges.</p>
+<p class="lede">Your CS2 coach. I put bots back exactly where you were killed in your real matches, inside CS2, so you take the duel again until you win it. During your matches I give you live advice on your second screen, and after them I tell you clearly what to fix. I learn from your demos and from a base of thousands of matches. Free and open source alpha for Windows and Linux: the first version open to all, expect rough edges.</p>
 <section id="download">{download_block("en", rel)}<p class="note"><b>Open source</b> (Apache 2.0): every line of the app is on <a href="{GITHUB}">GitHub</a>. Each release is published there too, with the same SHA-256 as on this page, tied to the exact commit it was built from: <a href="{GITHUB}/releases">releases</a>.</p></section>
 <div class="grid">
  <article class="card"><span class="eyebrow">Live</span><h3>During the match</h3><ul><li>What to buy for this round and the next</li><li>Where the Ts are likely to go, updated with the clock and what you see</li><li>Your paths and your strong spots on the radar, the grenades worth throwing now</li></ul></article>
- <article class="card"><span class="eyebrow">Prepare</span><h3>Before you play</h3><ul><li>A timed warm-up built on your weak points (5 to 45 min)</li><li>A training server with bots replaying your real deaths and clutches</li></ul></article>
+ <article class="card"><span class="eyebrow">Prepare</span><h3>Before you play</h3><ul><li>A warm-up built on your weak points, from 5 minutes (up to 45)</li><li>A training server with bots replaying your real deaths and clutches</li></ul></article>
  <article class="card"><span class="eyebrow">Review</span><h3>After the session</h3><ul><li>What changed against your previous matches, and why</li><li>Your focus of the week and the experiments to try</li><li>Every match round by round</li></ul></article>
 </div>
 <h2 id="see">See it</h2>
@@ -203,9 +397,9 @@ HOME = {
 <ol class="steps">
  <li>Open <b>WilySetup.exe</b>, then <b>Install</b>: it downloads me, checks every part and installs me for your Windows account (no administrator rights). I start with Windows and open Live by myself when CS2 starts.</li>
  <li>At my first launch, three steps: your Steam account (I find it), CS2 connected (one launch option to paste), your match history code (no Steam key to create). Then your matches are analyzed on your PC, a few minutes each.</li>
- <li>Prepare → <b>Warm-up</b>: the training server installs itself the first time (a separate copy of CS2 next to the game, links to its files, no extra space).</li>
+ <li>Prepare → <b>Warm-up</b>: the training server installs itself only the first time you open it, and runs on your CS2's own files (links: no second download, no extra space).</li>
 </ol>
-<p class="note">Needs Windows 10 or 11 (64-bit) or Linux (Python 3.11+), CS2 on Steam, 8 GB of RAM, and disk space for your demos (about 250 MB per match). The app speaks English, French, German, Russian, Portuguese, Spanish and Chinese.</p>
+<p class="note">Needs Windows 10 or 11 (64-bit) or Linux (Python 3.11+), CS2 on Steam, a PC with 8 GB of RAM (for the game and Wily together), and disk space for your demos (about 250 MB per match). The app speaks English, French, German, Russian, Portuguese, Spanish and Chinese.</p>
 <h2>Fair play and privacy</h2>
 <div class="grid">
  <article class="card"><h3>Only what Valve provides</h3><p>Game State Integration (the game's official feature for HUDs and RGB keyboards), the console log CS2 writes, the Steam Web API, the demos of your matches. I never read the game's memory or network traffic and I never play for you. The training server is a local copy of the game that only you join. You can check all of it: <a href="{GITHUB}">the code is public</a>.</p></article>
@@ -215,11 +409,11 @@ HOME = {
 """,
 "fr": lambda rel: f"""
 <h1>Salut, moi c'est Wily.</h1>
-<p class="lede">Ton coach CS2, sur ton deuxième écran. Je rejoue tes vraies morts avec des bots pour que tu reprennes le duel, je te conseille en direct pendant tes matchs, et je te dis clairement quoi corriger après. J'apprends de tes démos et d'une base de milliers de matchs. Alpha gratuite et open source pour Windows et Linux : la première version ouverte à tous, des défauts restent à corriger.</p>
+<p class="lede">Ton coach CS2. Je remets des bots exactement là où on t'a tué dans tes vrais matchs, dans CS2 même, pour que tu rejoues le duel jusqu'à le gagner. Pendant tes matchs, je te conseille en direct sur ton deuxième écran, et après, je te dis clairement quoi corriger. J'apprends de tes démos et d'une base de milliers de matchs. Alpha gratuite et open source pour Windows et Linux : la première version ouverte à tous, des défauts restent à corriger.</p>
 <section id="download">{download_block("fr", rel)}<p class="note"><b>Open source</b> (Apache 2.0) : tout le code de l'app est sur <a href="{GITHUB}">GitHub</a>. Chaque version y est aussi publiée, avec le même SHA-256 que sur cette page, liée au commit exact dont elle est construite : <a href="{GITHUB}/releases">les versions</a>.</p></section>
 <div class="grid">
  <article class="card"><span class="eyebrow">Live</span><h3>Pendant le match</h3><ul><li>Quoi acheter pour ce round et le suivant</li><li>Où les T vont probablement aller, mis à jour avec le chrono et ce que tu vois</li><li>Tes chemins et tes bons spots sur le radar, les grenades à lancer maintenant</li></ul></article>
- <article class="card"><span class="eyebrow">Préparer</span><h3>Avant de jouer</h3><ul><li>Un échauffement chronométré construit sur tes points faibles (5 à 45 min)</li><li>Un serveur d'entraînement avec des bots qui rejouent tes vraies morts et tes clutchs</li></ul></article>
+ <article class="card"><span class="eyebrow">Préparer</span><h3>Avant de jouer</h3><ul><li>Un échauffement construit sur tes points faibles, dès 5 minutes (jusqu'à 45)</li><li>Un serveur d'entraînement avec des bots qui rejouent tes vraies morts et tes clutchs</li></ul></article>
  <article class="card"><span class="eyebrow">Bilan</span><h3>Après la session</h3><ul><li>Ce qui a changé par rapport à tes matchs précédents, et pourquoi</li><li>Ton focus de la semaine et les expériences à tenter</li><li>Chaque match round par round</li></ul></article>
 </div>
 <h2 id="see">En images</h2>
@@ -233,9 +427,9 @@ HOME = {
 <ol class="steps">
  <li>Ouvre <b>WilySetup.exe</b>, puis <b>Installer</b> : il me télécharge, vérifie chaque partie et m'installe pour ton compte Windows (sans droits administrateur). Je démarre avec Windows et j'ouvre Live tout seul quand CS2 démarre.</li>
  <li>À mon premier lancement, trois étapes : ton compte Steam (je le trouve), CS2 connecté (une option de lancement à coller), ton code d'historique des matchs (aucune clé Steam à créer). Ensuite tes matchs sont analysés sur ton PC, quelques minutes chacun.</li>
- <li>Préparer → <b>Échauffement</b> : le serveur d'entraînement s'installe tout seul la première fois (une copie séparée de CS2 à côté du jeu, des liens vers ses fichiers, sans espace en plus).</li>
+ <li>Préparer → <b>Échauffement</b> : le serveur d'entraînement s'installe seulement la première fois que tu l'ouvres, et tourne sur les fichiers de ton CS2 (des liens : pas de second téléchargement, pas d'espace en plus).</li>
 </ol>
-<p class="note">Il faut Windows 10 ou 11 (64 bits) ou Linux (Python 3.11+), CS2 sur Steam, 8 Go de RAM et de la place pour tes démos (environ 250 Mo par match). L'app parle français, anglais, allemand, russe, portugais, espagnol et chinois.</p>
+<p class="note">Il faut Windows 10 ou 11 (64 bits) ou Linux (Python 3.11+), CS2 sur Steam, un PC avec 8 Go de RAM (pour le jeu et Wily ensemble) et de la place pour tes démos (environ 250 Mo par match). L'app parle français, anglais, allemand, russe, portugais, espagnol et chinois.</p>
 <h2>Fair-play et vie privée</h2>
 <div class="grid">
  <article class="card"><h3>Seulement ce que Valve fournit</h3><p>Le Game State Integration (la fonction officielle du jeu pour les HUD et les claviers RGB), le journal de console que CS2 écrit, l'API Steam, les démos de tes matchs. Je ne lis jamais la mémoire du jeu ni son trafic réseau, et je ne joue jamais à ta place. Le serveur d'entraînement est une copie locale du jeu que toi seul rejoins. Tu peux tout vérifier : <a href="{GITHUB}">le code est public</a>.</p></article>
@@ -362,6 +556,14 @@ ICON = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect widt
 
 HTACCESS = """# Wily's site: no listing, no sniffing, nothing loaded from elsewhere
 Options -Indexes
+# http to https, one address per page (03/11, search engines: http answered 200); both conditions, as Infomaniak's proxy
+# says https in X-Forwarded-Proto (no loop)
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteCond %{HTTPS} off
+RewriteCond %{HTTP:X-Forwarded-Proto} !https
+RewriteRule ^(.*)$ https://%{HTTP_HOST}/$1 [R=301,L]
+</IfModule>
 <Files ".user.ini">
 Require all denied
 </Files>
@@ -377,6 +579,53 @@ AddType application/zip .zip
 AddType application/octet-stream .exe
 AddType application/json .json
 AddType font/woff2 .woff2
+# the pages' charset in the header too (03/11: Russian and Chinese pages; the server sent text/html with none)
+AddDefaultCharset UTF-8
+AddCharset UTF-8 .txt .xml .css .js
+"""
+
+
+def sitemap():
+    """Every page once, each with its six other languages and x-default (03/11: Google's sitemap hreflang form), the
+    licenses alone; lastmod the build's day."""
+    day = time.strftime("%Y-%m-%d")
+    rows = []
+    for kind, fs in FILES.items():
+        alts = "".join(f'<xhtml:link rel="alternate" hreflang="{HL.get(l, l)}" href="{url(fs[l])}"/>' for l in LANGS if l in fs) \
+            + f'<xhtml:link rel="alternate" hreflang="x-default" href="{url(fs["en"])}"/>'
+        rows += [f"<url><loc>{url(fs[l])}</loc><lastmod>{day}</lastmod>{alts}</url>" for l in LANGS if l in fs]
+    rows.append(f"<url><loc>{url('licenses.html')}</loc><lastmod>{day}</lastmod></url>")
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" '
+            'xmlns:xhtml="http://www.w3.org/1999/xhtml">\n' + "\n".join(rows) + "\n</urlset>\n")
+
+
+def llms_txt(rel):
+    """llms.txt (llmstxt.org, 03/11): what Wily is in a few lines for language models, with the pages that say more."""
+    ver = f"Version {rel['app']} ({time.strftime('%Y-%m-%d', time.localtime(rel['released']))}), a base of {rel['base']['matches']:,} matches." if rel else ""
+    homes = "\n".join(f"- [{LANG_NAME[l]}]({url(FILES['home'][l])})" for l in LANGS)
+    return f"""# Wily
+
+> Wily is a free, open-source (Apache 2.0) coach for Counter-Strike 2 (CS2) on Windows and Linux. On a local training
+> server, bots replay the exact duels and clutches where you died in your real matches; during matches it gives live
+> advice on a second screen (Game State Integration); after them it reviews your demos round by round. It runs on your PC,
+> with no account, and reads only what Valve provides (no memory reading, no cheating).
+
+{ver} Alpha: the first version open to all players. Made by {PUBLISHER} (France). Not affiliated with Valve Corporation.
+
+## Pages
+
+{homes}
+- [Privacy policy]({url(FILES['privacy']['en'])}): what stays on your PC, what is shared (anonymized), your rights
+- [Terms of use]({url(FILES['terms']['en'])})
+
+## Code
+
+- [Source code on GitHub]({GITHUB}): the whole app, plugin and site
+- [Releases]({GITHUB}/releases): each release with the SHA-256 published on the site
+
+## Contact
+
+- {CONTACT}
 """
 
 
@@ -403,7 +652,7 @@ def build():
         if f.endswith("-LICENSE.txt"):
             shutil.copy2(os.path.join(HERE, "ui", "fonts", f), os.path.join(OUT, "licenses", "font-" + f))
     open(os.path.join(OUT, "assets", "icon.svg"), "w", encoding="utf-8").write(ICON)
-    open(os.path.join(OUT, "assets", "site.css"), "w", encoding="utf-8").write(fonts_css().replace("url(fonts/", "url(../fonts/") + CSS)
+    open(os.path.join(OUT, "assets", "site.css"), "w", encoding="utf-8").write(fonts_css().replace("url(fonts/", "url(../fonts/") + CSS + CSS_HOME)
     for f in os.listdir(os.path.join(HERE, "legal", "licenses")):
         shutil.copy2(os.path.join(HERE, "legal", "licenses", f), os.path.join(OUT, "licenses"))
     shutil.copy2(os.path.join(HERE, "plugin", "CoachReplay", "LICENSE.txt"), os.path.join(OUT, "licenses", "CoachReplay-LICENSE.txt"))
@@ -414,8 +663,17 @@ def build():
     desc = {"en": "Wily, your CS2 coach: live advice on your second screen, a warm-up with bots on your own situations, and a review of your matches.",
             "fr": "Wily, ton coach CS2 : des conseils en direct sur ton deuxième écran, un échauffement avec des bots sur tes situations, et la revue de tes matchs.",
             **langs.DESC}
-    pages = {"index.html": ("en", "Wily · your CS2 coach on your second screen", HOME["en"](rel)),
-             "fr.html": ("fr", "Wily · ton coach CS2 sur ton deuxième écran", HOME["fr"](rel)),
+    def links(l):   # the home's way to the comparison and the guide (English, French)
+        return "".join(f'<a href="{FILES[k][l]}">{MORE[l][k]} →</a>' for k in extra.PAGES if l in FILES[k] and l in MORE)
+
+    def home(l, h):
+        body = relayout(l, h)
+        if links(l):
+            body = body.replace('<h2 id="see">', f'<p class="more">{links(l)}</p>\n<h2 id="see">', 1)
+        return body + jsonld(l, rel, desc[l], h)
+    desc.update(DESC_HOME)
+    pages = {"index.html": ("en", TITLE_HOME["en"], home("en", HOME["en"](rel))),
+             "fr.html": ("fr", TITLE_HOME["fr"], home("fr", HOME["fr"](rel))),
              "privacy.html": ("en", "Privacy policy · Wily", PRIVACY["en"]),
              "confidentialite.html": ("fr", "Politique de confidentialité · Wily", PRIVACY["fr"]),
              "terms.html": ("en", "Terms of use · Wily", TERMS["en"]),
@@ -423,16 +681,25 @@ def build():
     C = {"publisher": PUBLISHER, "contact": CONTACT, "github": GITHUB, "host": HOST}
     for l in langs.HOME:   # 13/10: German, Russian, Portuguese, Spanish, Chinese
         th, tp, tt = langs.TITLE[l]
-        pages[FILES["home"][l]] = (l, th, langs.HOME[l](C, download_block(l, rel)))
+        pages[FILES["home"][l]] = (l, TITLE_HOME.get(l, th), home(l, langs.HOME[l](C, download_block(l, rel))))
         pages[FILES["privacy"][l]] = (l, tp, langs.PRIVACY[l](C))
         pages[FILES["terms"][l]] = (l, tt, langs.TERMS[l](C))
     notices = html.escape(open(os.path.join(HERE, "legal", "THIRD_PARTY_NOTICES.txt"), encoding="utf-8").read())
     lic_links = " · ".join(f'<a href="licenses/{f}">{f[:-4]}</a>' for f in sorted(os.listdir(os.path.join(OUT, "licenses"))))
     pages["licenses.html"] = ("en", "Licenses · Wily", f'<div class="doc"><h1>Licenses</h1><p>{lic_links}</p></div><pre class="notices">{notices}</pre>')
+    descs = {}
+    for k, by in extra.PAGES.items():
+        for l, (f, title, d, body) in by.items():
+            pages[f] = (l, title, body(C))
+            descs[f] = d
     for f, (lang, title, body) in pages.items():
-        open(os.path.join(OUT, f), "w", encoding="utf-8").write(page(lang, title, body, f, desc[lang]))
+        open(os.path.join(OUT, f), "w", encoding="utf-8").write(page(lang, title, body, f, descs.get(f, desc[lang])))
     open(os.path.join(OUT, ".htaccess"), "w", encoding="utf-8", newline="\n").write(HTACCESS)
-    open(os.path.join(OUT, "robots.txt"), "w", encoding="utf-8").write("User-agent: *\nDisallow: /api/\nDisallow: /releases/\n")
+    open(os.path.join(OUT, "robots.txt"), "w", encoding="utf-8").write(
+        f"User-agent: *\nDisallow: /api/\nDisallow: /releases/\n\nSitemap: {SITE}/sitemap.xml\n")
+    open(os.path.join(OUT, "assets", "site.js"), "w", encoding="utf-8", newline="\n").write(SITE_JS)
+    open(os.path.join(OUT, "sitemap.xml"), "w", encoding="utf-8", newline="\n").write(sitemap())
+    open(os.path.join(OUT, "llms.txt"), "w", encoding="utf-8", newline="\n").write(llms_txt(rel))
     print(f"site: {OUT} ({len(pages)} pages, release {rel['app'] if rel else 'none yet'})", flush=True)
 
 

@@ -47,13 +47,25 @@ def _logs():
     return out
 
 
+_BY = {"state": None, "by": {}}
+
+
+def _rounds_of(mid):
+    """The base's T side rounds of one match (16/10: the table split by match once per state of the base, not copied
+    and filtered again for each of your matches: 61 times a plan)."""
+    from wily.insights import tside
+    st = tside._base_state()[0]
+    if st is None or _BY["state"] != st:
+        df = tside.load()
+        _BY.update(state=st, by={k: g for k, g in df.groupby(df.match.astype(str), sort=False)})
+    return _BY["by"].get(str(mid))
+
+
 def _truth(mid, sid):
     """The match's rounds as the demo tells them: site, tempo, play, plant site, both buys, who won, your side."""
     import pandas as pd
-    from wily.insights import tside
-    df = tside.load()
-    g = df[df.match.astype(str) == str(mid)]
-    if not len(g):
+    g = _rounds_of(mid)
+    if g is None or not len(g):
         return None
     side = {}
     f = os.path.join(config.DEEP, str(mid), "loadout.parquet")

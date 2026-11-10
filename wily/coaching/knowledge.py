@@ -300,16 +300,16 @@ PARTY = {
 
 # ---------- level ----------
 LEVELS = [
-    {"key": "debut", "max": 10000, "name": "Under 10,000", "comp": (1, 10), "focus": [
+    {"key": "debut", "max": 10000, "name": N_("Under 10,000"), "comp": (1, 10), "focus": [
         N_("Crosshair at head height on every angle."), N_("Counter-strafe: full stop before shooting."),
         N_("One single map, learned in depth."), N_("Economy: buy with the team.")]},
-    {"key": "inter", "max": 15000, "name": "10,000 to 15,000", "comp": (11, 13), "focus": [
+    {"key": "inter", "max": 15000, "name": N_("10,000 to 15,000"), "comp": (11, 13), "focus": [
         N_("Crosshair and trades above all."), N_("Map control and basic utility (1 smoke, 2 flashes per site)."),
         N_("Play in pairs rather than alone.")]},
-    {"key": "confirme", "max": 20000, "name": "15,000 to 20,000", "comp": (14, 16), "focus": [
+    {"key": "confirme", "max": 20000, "name": N_("15,000 to 20,000"), "comp": (14, 16), "focus": [
         N_("Master 2-3 maps: callouts, timings and lineups."), N_("Pistol rounds and conversion rounds: no impulse buys."),
         N_("Mid-round decisions: rotations, retakes, man advantage.")]},
-    {"key": "avance", "max": 25000, "name": "20,000 to 25,000", "comp": (17, 17), "focus": [
+    {"key": "avance", "max": 25000, "name": N_("20,000 to 25,000"), "comp": (17, 17), "focus": [
         N_("The 3 levers that unlock progress: utility, economy, spacing."), N_("One signature map mastered in depth.")]},
     {"key": "elite", "max": 99999, "name": N_("25,000 and up"), "comp": (18, 18), "focus": [
         N_("Stop after 2-3 losses in a row: the most profitable habit for your rating."), N_("Calls and coordination: players who communicate win more.")]},

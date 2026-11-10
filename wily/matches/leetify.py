@@ -25,7 +25,7 @@ def _get(url, timeout=20, tries=4):
         if wait > 0 and "leetify" in url:
             time.sleep(wait)
         _LAST[0] = time.time()
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 cs2-coach"})
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 wily-coach"})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read()

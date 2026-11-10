@@ -50,6 +50,20 @@ public class Track
     [JsonIgnore] public List<Nade> TrackNades { get; set; } = new();   // a defense's attacker: the grenades of the real hit it walks
     [JsonIgnore] public int NadeNext { get; set; }
     [JsonIgnore] public bool Runner { get; set; }   // a timing smoke's rusher: runs its way, never stops to fight (07/10)
+    [JsonIgnore] public float Warp { get; set; }   // frames its way's clock waited for it (it couldn't run the real player's speed)
+    [JsonIgnore] public List<(int F, float Rise)>? Jumps { get; set; }   // its way's jumps (CoachReplay.JumpsOf), for JumpsFor
+    [JsonIgnore] public float[]? JumpsFor { get; set; }
+    [JsonIgnore] public int JumpDone { get; set; } = -1;   // the last of them it jumped (or let go)
+    [JsonIgnore] public float SpawnF { get; set; }   // the frame of its way it was put on (a wave's attacker: further on when its start was taken)
+    [JsonPropertyName("duck")] public int[] DuckFrames { get; set; } = Array.Empty<int>();   // the frames the real player was crouched at
+    [JsonIgnore] HashSet<int>? duckSet;
+    public bool DuckAt(int i) => (duckSet ??= new HashSet<int>(DuckFrames)).Contains(i);
+    // another bot's way taken (a defense's attacker to your zone, 29/10): its points, its crouches, its jumps; no grenade, no death
+    public void TakeWay(float[] path)
+    {
+        Path = path; DuckFrames = Array.Empty<int>(); duckSet = null; Jumps = null; JumpsFor = null; JumpDone = -1;
+        TrackNades = new(); NadeNext = 0; Death = -1; Killer = "";
+    }
     public int Frames => Path.Length / 5;
 }
 
@@ -114,7 +128,7 @@ public partial class CoachReplay : BasePlugin
 {
     public override string ModuleName => "CoachReplay";
     public override string ModuleVersion => "1.0";
-    public override string ModuleAuthor => "cs2-coach";
+    public override string ModuleAuthor => "wily-coach";
 
     string Dir => System.IO.Path.GetFullPath(System.IO.Path.Combine(ModuleDirectory, "..", "..", "..", "..", "coach"));
     Scenario? cur;
@@ -138,23 +152,53 @@ public partial class CoachReplay : BasePlugin
     // player's reaction time (04/10, "as if they had lag": they used to aim at you the very tick they saw you)
     const int ReactTicks = 13;
     // the aim map's duels: the ticks a target must have seen you before its shots hurt (0.47 s at Easy to 0.23 s at Expert)
-    int DuelReact => difficulty switch { 0 => 30, 1 => 24, 2 => 19, _ => 15 };
+    int DuelReact => BotLv switch { 0 => 30, 1 => 24, 2 => 19, _ => 15 };
     // a bot on its path notices you this close, or when you shoot this close (a silenced gun: half): it then plays on
     // its own (04/10: "expert bots that don't even look at me")
-    const float Near = 350f, Earshot = 1200f;
+    const float Near = 350f, OnYou = 128f, Earshot = 1200f;
     const string NullModel = "models/props_doors/null.vmdl";   // an empty model of the game (the grenade camera's)
     bool bombLive, bombDone;   // a situation: the bomb is down here / the demo's plant is done (or will not be)
     int protectUntil;   // a defense: you just came back, nothing hurts you until this tick
+    int defDeadAt = -1;   // a defense: the tick you were found dead with the drill not knowing it (SessionTick)
     bool humanDead, traded;   // a situation: you died, and your killer died within 3 s
     int tradeKiller = -1, tradeUntil;
     string? builtFor;   // the situation the bots on the server were made for
     int difficulty = 2;
+    // the bots' own level under the session's, for the measure only (css_botlevel, console; 29/10, the user: "mesurer avec
+    // des bots plus faciles que pour toi"): the drills stay the session's (its format, its waves), the bots fight at it
+    int botLevel = -1;
+    int BotLv => botLevel >= 0 ? botLevel : difficulty;
     double devSum; int devN;   // how far the bots drift from their path between two ticks (checked in spec mode)
     // CSmokeGrenadeProjectile::Create(origin, angles, velocity, angular impulse, thrower, item definition, team): a smoke made
     // any other way never pops. Found in this server's server.dll (unique); null after a game update that moved it: no smokes
-    const string SmokeSig = "48 8B C4 48 89 58 ? 48 89 68 ? 48 89 70 ? 57 41 56 41 57 48 81 EC ? ? ? ? 48 8B B4 24 ? ? ? ? 4D 8B F8 4C 8B C2";
+    // 23/10, CS2 1.41.9.2: the function compiled anew (its frame set up another way), the old signature found nowhere and
+    // no smoke thrown by a bot any more (the guided self-test missed every one): the newest first, then the older ones
+    static readonly string[] SmokeSigs = {
+        "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 41 56 41 57 48 83 EC ? 48 8B B4 24 ? ? ? ? 4D 8B F8 4C 8B C2",
+        "48 8B C4 48 89 58 ? 48 89 68 ? 48 89 70 ? 57 41 56 41 57 48 81 EC ? ? ? ? 48 8B B4 24 ? ? ? ? 4D 8B F8 4C 8B C2" };
     MemoryFunctionWithReturn<nint, nint, nint, nint, nint, int, int, nint>? smokeCreate;
     // CHEGrenadeProjectile::Create(origin, angles, velocity, angular impulse, thrower, item definition): sets its fuse and think
+    // CBasePlayerController::OnSimulateUserCommands(controller): runs a player's queued commands (its "RunCommand" scope),
+    // found by its strings in 1.41.9.2's server.dll (28/10: the bots' own commands, the user's "vrais joueurs")
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    static extern nint VirtualQuery(nint addr, out MemInfo info, nint len);
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    struct MemInfo { public nint Base, AllocBase; public uint AllocProtect; public nint Size; public uint State, Protect, Type; }
+    // memory the process may read (committed, not a guard page, a read right): a pointer checked before it is followed
+    static bool Readable(nint a, int len)
+    {
+        if (a < 0x10000) return false;
+        if (VirtualQuery(a, out var m, System.Runtime.InteropServices.Marshal.SizeOf<MemInfo>()) == 0) return false;
+        if (m.State != 0x1000 || (m.Protect & 0x100) != 0 || (m.Protect & 0x66) == 0) return false;   // MEM_COMMIT, PAGE_GUARD, R/RW/RX/RWX
+        return a + len <= m.Base + m.Size;
+    }
+    // the game's own server.dll (csgo/bin/win64; Metamod's stub has the same name, 28/10 23:30)
+    static nint GameServerDll() => System.Diagnostics.Process.GetCurrentProcess().Modules.Cast<System.Diagnostics.ProcessModule>()
+        .FirstOrDefault(m => m.ModuleName.Equals("server.dll", StringComparison.OrdinalIgnoreCase)
+                             && (m.FileName ?? "").Contains(System.IO.Path.Combine("csgo", "bin", "win64"), StringComparison.OrdinalIgnoreCase))?.BaseAddress ?? 0;
+    static long Rd64(nint a) => System.Runtime.InteropServices.Marshal.ReadInt64(a);
+    static int Rd32(nint a) => System.Runtime.InteropServices.Marshal.ReadInt32(a);
+    const string SimCmdSig = "40 55 53 56 57 41 55 41 56 48 8D AC 24 08 F9 FF FF 48 81 EC F8 07 00 00 4C 8B F1 48 C7 44 24 48 ? ? ? ? 48 8D 1D ? ? ? ?";
     const string HeSig = "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 48 83 EC 50 48 8B AC 24 ? ? ? ? 49 8B F8 4C 8B C2 0F 29 74 24 ? 48 8B D1 0F 29 7C 24";
     MemoryFunctionWithReturn<nint, nint, nint, nint, nint, int, nint>? heCreate;
     // CMolotovProjectile::Create(origin, angles, velocity, angular impulse, thrower, item definition: 46 molotov, 48 incendiary)
@@ -166,14 +210,30 @@ public partial class CoachReplay : BasePlugin
         loadedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         Directory.CreateDirectory(System.IO.Path.Combine(Dir, "scenarios"));
         StartIo();
-        try { smokeCreate = new(SmokeSig); } catch (Exception e) { smokeCreate = null; Log("no smokes: {m}", e.Message); }
+        foreach (var sig in SmokeSigs)
+        {
+            try { smokeCreate = new(sig); Log("smokes: signature {i} of {n}", Array.IndexOf(SmokeSigs, sig) + 1, SmokeSigs.Length); break; }
+            catch (Exception e) { smokeCreate = null; Log("no smokes with signature {i}: {m}", Array.IndexOf(SmokeSigs, sig) + 1, e.Message); }
+        }
         try { heCreate = new(HeSig); } catch (Exception e) { heCreate = null; Log("no HE: {m}", e.Message); }
         try { molotovCreate = new(MolotovSig); } catch (Exception e) { molotovCreate = null; Log("no molotov: {m}", e.Message); }
         RegisterListener<Listeners.OnTick>(OnTick);
+        CombatLoad();   // css_scripted: bots fighting by the plugin's hand (Combat.cs, tests)
+        BotRecLoad();   // css_botrec: every player of a live drill to a file (BotRec.cs, tests)
+        LookEvents();   // your shots, heard by the bots (Look.cs)
+        MoveEvents();   // every player's shots, heard by the other side (Move.cs)
+        BehEvents();   // footsteps and shots each side hears (Behavior.cs)
         RegisterListener<Listeners.OnServerPrecacheResources>(m => m.AddResource(NullModel));
-        RegisterListener<Listeners.OnMapStart>(_ =>
+        RegisterListener<Listeners.OnMapStart>(mapName =>
         {
             rules = null;
+            // a drill of another map left from an ended session: forgotten, not played on this one (03/11, round 18: Anubis's
+            // boost "retried" on Ancient after the change, its defense session never got a drill started)
+            if (sess == null && cur != null && !string.IsNullOrEmpty(cur.Map) && !string.Equals(cur.Map, mapName, StringComparison.OrdinalIgnoreCase))
+            {
+                Log("map {m}: {d} of {o} forgotten", mapName, cur.Id, cur.Map);
+                cur = null; drill = null;
+            }
             phase = cur != null || sess != null ? "setup" : "idle";
             AddTimer(4f, () => { Server.ExecuteCommand("sv_hibernate_when_empty 0"); if (sess != null) SessionResume(); else if (cur != null) Setup(); });
         });
@@ -187,6 +247,29 @@ public partial class CoachReplay : BasePlugin
             return HookResult.Continue;
         }, HookMode.Pre);
         RegisterEventHandler<EventPlayerHurt>(OnHurt);
+        // your bullets as the server has them, for the real-client test's aim (26/10: its shots missed 3 to 6 times in a row
+        // at 500-850 u): where each one went against the nearest enemy head on its line, and your hits (bots_live.json)
+        RegisterEventHandler<EventBulletImpact>((e, _) => { MeImpact(e); return HookResult.Continue; });
+        // a vent shot through breaks (29/10, the user on Cache: "même si tu tires à travers, elle est supposée se casser ... et
+        // là elle se casse jamais"): an impact within 48 u of a whole one
+        RegisterEventHandler<EventBulletImpact>((e, _) =>
+        {
+            var at = new Vector3(e.X, e.Y, e.Z);
+            foreach (var v in Utilities.FindAllEntitiesByDesignerName<CBaseEntity>("prop_dynamic"))
+                if (v.IsValid && v.Health > 0 && v.AbsOrigin is { } vo && Vector3.Distance(at, new Vector3(vo.X, vo.Y, vo.Z)) < 48f
+                    && ((v.Entity?.Name ?? "") + (v.CBodyComponent?.SceneNode?.GetSkeletonInstance()?.ModelState.ModelName ?? "")).Contains("vent", StringComparison.OrdinalIgnoreCase))
+                { v.AcceptInput("Break"); Log("broken by a bullet: a vent at {x:F0} {y:F0} {z:F0}", vo.X, vo.Y, vo.Z); }
+            return HookResult.Continue;
+        });
+        RegisterEventHandler<EventPlayerHurt>((e, _) =>
+        {
+            if (e.Attacker is { IsValid: true, IsBot: false } && e.Userid is { IsValid: true, IsBot: true } v)
+            {
+                meHits.Add(new() { ["t"] = Server.TickCount, ["slot"] = v.Slot, ["group"] = e.Hitgroup, ["dmg"] = e.DmgHealth });
+                if (meHits.Count > 12) meHits.RemoveAt(0);
+            }
+            return HookResult.Continue;
+        });
         RegisterEventHandler<EventPlayerConnectFull>((e, _) =>
         {
             if (e.Userid is { IsBot: false }) { if (sess != null) AddTimer(3f, SessionResume); else if (cur != null) AddTimer(2f, Setup); }
@@ -300,24 +383,82 @@ public partial class CoachReplay : BasePlugin
                     Log("dbgbreakat after: {n} valid {v} hp {h}", e.Entity?.Name, e.IsValid, e.Health);
             });
         });
-        AddCommand("css_dbgboost", "two bots of a team: one held still (crouched with 1), the other dropped on its head; heights after 1.5 s", (p, c) =>
+        AddCommand("css_dbgboost", "two bots of a team: one held still (crouched with 1), the other put on its head: css_dbgboost [duck 0|1] [u over its top, default 100]", (p, c) =>
         {
+            // 28/10, the user on the boosts: "vérifie que le joueur n'est pas un tout petit peu en conflit avec la tête du bot
+            // en dessous". The one below held 0.5 s first (its crouch settled), the other put `up` u over its box's top, then
+            // each tick for 1.5 s: on the ground or not for the game, what it stands on, its feet over the box's top
             var duck = c.ArgCount > 1 && c.GetArg(1) == "1";
+            var up = c.ArgCount > 2 && float.TryParse(c.GetArg(2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var uv) ? uv : 100f;
             var bs = Utilities.GetPlayers().Where(x => x is { IsValid: true, IsBot: true, PawnIsAlive: true }).GroupBy(x => x.Team).FirstOrDefault(g => g.Count() >= 2)?.Take(2).ToList();
             if (bs == null || bs[0].PlayerPawn.Value?.AbsOrigin == null || bs[1].PlayerPawn.Value == null) { Log("dbgboost: two living bots of one team needed"); return; }
-            Zombie(true);
+            var how = c.ArgCount > 3 ? c.GetArg(3) : "zombie";   // their AI idle by bot_zombie, or by bot_stop ("stop": do they fall then?)
+            Zombie(how == "zombie");
+            Server.ExecuteCommand($"bot_stop {(how == "stop" ? 1 : 0)}");
             var a = bs[0].PlayerPawn.Value!; var b = bs[1].PlayerPawn.Value!;
             var at = new Vector3(a.AbsOrigin!.X, a.AbsOrigin.Y, a.AbsOrigin.Z);
             Freeze(a, true);
-            b.Teleport(at + new Vector3(0, 0, 100), null, Vector3.Zero);
             Freeze(b, false);
+            b.Teleport(at + new Vector3(60f, 0f, 0f), null, Vector3.Zero);
             var tm = AddTimer(0.05f, () => { if (a.IsValid) { a.Teleport(at, null, Vector3.Zero); HoldAim(a, new Vector3(0, 90, 0), duck); } }, CounterStrikeSharp.API.Modules.Timers.TimerFlags.REPEAT);
+            AddTimer(0.5f, () =>
+            {
+                if (!a.IsValid || !b.IsValid || a.Collision == null) return;
+                var top = at.Z + a.Collision.Maxs.Z;
+                b.Teleport(new Vector3(at.X, at.Y, top + up), null, Vector3.Zero);
+                int n = 0, onG = 0; string? gent = null; float gapMin = 999f, gapMax = -999f;
+                var tick = AddTimer(0.015625f, () =>
+                {
+                    if (!a.IsValid || !b.IsValid || b.AbsOrigin == null || a.Collision == null || a.AbsOrigin == null) return;
+                    var g = b.AbsOrigin.Z - (a.AbsOrigin.Z + a.Collision.Maxs.Z);
+                    if (n++ < 32) return;   // its first half second: falling, landing
+                    if ((b.Flags & (uint)PlayerFlags.FL_ONGROUND) != 0) onG++;
+                    gent ??= b.GroundEntity?.Value?.DesignerName;
+                    gapMin = Math.Min(gapMin, g); gapMax = Math.Max(gapMax, g);
+                }, CounterStrikeSharp.API.Modules.Timers.TimerFlags.REPEAT);
+                AddTimer(1.5f, () =>
+                {
+                    tick.Kill(); tm.Kill();
+                    var da = a.MovementServices == null ? -1f : new CCSPlayer_MovementServices(a.MovementServices.Handle).DuckAmount;
+                    Log("dbgboost " + how + " duck {d} up {u}: below duck amount {da:F2} top {t:F1} (maxs {m:F1}); on top: on the ground {g}/{n} ticks, stands on {e}, feet {lo:F2} to {hi:F2} u over the top, vel {v} (solid teammates {s})",
+                        duck, up, da, top, a.Collision?.Maxs.Z ?? -1f, onG, Math.Max(0, n - 32), gent ?? "-", gapMin, gapMax,
+                        b.AbsVelocity is { } bv ? $"{bv.X:F1} {bv.Y:F1} {bv.Z:F1}" : "-", ConVar.Find("mp_solid_teammates")?.GetPrimitiveValue<int>());
+                });
+            });
+        });
+        // 28/10, lab 4: you rest 0.6 u over a standing teammate's head at Dust2's Top Mid and the game has you off the ground
+        // (at Short Stairs, right on it: on the ground). You put `up` u over the nearest teammate bot's box top, then for 1 s:
+        // on the ground or not, on what, your feet over its top: css_dbgboostme [up]
+        AddCommand("css_dbgboostme", "you put over the nearest teammate bot's head: css_dbgboostme [u over its top]", (p, c) =>
+        {
+            var up = c.ArgCount > 1 && float.TryParse(c.GetArg(1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var uv) ? uv : 0f;
+            var h = Humans().FirstOrDefault(x => x.PawnIsAlive);
+            var hp = h?.PlayerPawn.Value;
+            if (h == null || hp?.AbsOrigin == null) { Log("dbgboostme: nobody alive"); return; }
+            var ho = new Vector3(hp.AbsOrigin.X, hp.AbsOrigin.Y, hp.AbsOrigin.Z);
+            var mate = Utilities.GetPlayers().Where(x => x is { IsValid: true, IsBot: true, PawnIsAlive: true } && x.Team == h.Team && x.PlayerPawn.Value?.AbsOrigin != null)
+                .OrderBy(x => { var o = x.PlayerPawn.Value!.AbsOrigin!; return Vector3.Distance(new Vector3(o.X, o.Y, o.Z), ho); }).FirstOrDefault();
+            var mp = mate?.PlayerPawn.Value;
+            if (mp?.AbsOrigin == null || mp.Collision == null) { Log("dbgboostme: no teammate bot"); return; }
+            var mo = new Vector3(mp.AbsOrigin.X, mp.AbsOrigin.Y, mp.AbsOrigin.Z);
+            hp.Teleport(new Vector3(mo.X, mo.Y, mo.Z + mp.Collision.Maxs.Z + up), null, Vector3.Zero);
+            int n = 0, onG = 0; string? gent = null; float lo = 999f, hi = -999f;
+            var tm = AddTimer(0.015625f, () =>
+            {
+                if (!hp.IsValid || hp.AbsOrigin == null || !mp.IsValid || mp.AbsOrigin == null || mp.Collision == null) return;
+                if (n++ < 32) return;
+                var g = hp.AbsOrigin.Z - (mp.AbsOrigin.Z + mp.Collision.Maxs.Z);
+                lo = Math.Min(lo, g); hi = Math.Max(hi, g);
+                if ((hp.Flags & (uint)PlayerFlags.FL_ONGROUND) != 0) onG++;
+                gent ??= hp.GroundEntity?.Value?.DesignerName;
+            }, CounterStrikeSharp.API.Modules.Timers.TimerFlags.REPEAT);
             AddTimer(1.5f, () =>
             {
                 tm.Kill();
-                var da = a.MovementServices == null ? -1f : new CCSPlayer_MovementServices(a.MovementServices.Handle).DuckAmount;
-                Log("dbgboost duck {d}: the one below has duck amount {da:F2}, the one on top is {h:F1} u above it (solid teammates {s})", duck, da,
-                    b.IsValid && b.AbsOrigin != null ? b.AbsOrigin.Z - at.Z : -999f, ConVar.Find("mp_solid_teammates")?.GetPrimitiveValue<int>());
+                Log("dbgboostme up {u}: on the ground {g}/{n} ticks, on {e}, feet {lo:F2} to {hi:F2} u over its top (its maxs {m:F1}, duck {d:F2}, its z {z:F1}), you {mv}, solid teammates {s}",
+                    up, onG, Math.Max(0, n - 32), gent ?? "-", lo, hi, mp.Collision?.Maxs.Z ?? -1f,
+                    mp.MovementServices == null ? -1f : new CCSPlayer_MovementServices(mp.MovementServices.Handle).DuckAmount, mp.AbsOrigin?.Z ?? 0f,
+                    hp.MoveType.ToString(), ConVar.Find("mp_solid_teammates")?.GetPrimitiveValue<int>());
             });
         });
         AddCommand("css_dbgents", "the map's entity classes and how many of each", (p, c) =>
@@ -369,7 +510,22 @@ public partial class CoachReplay : BasePlugin
     {
         var f = System.IO.Path.Combine(Dir, "scenarios", id + ".json");
         if (!File.Exists(f)) return null;
-        try { return JsonSerializer.Deserialize<Scenario>(File.ReadAllText(f)); } catch (Exception e) { Log($"{id}: {e.Message}"); return null; }
+        try { return CutJumps(JsonSerializer.Deserialize<Scenario>(File.ReadAllText(f))); } catch (Exception e) { Log($"{id}: {e.Message}"); return null; }
+    }
+
+    // a way ends at its first step of more than 300 u (17/10, the self-test: a round's end tick was the next round's start,
+    // everyone back on a spawn; files built before replay.py cut them)
+    static Scenario? CutJumps(Scenario? s)
+    {
+        foreach (var t in s?.Players ?? new())
+            for (var k = 0; k + 1 < t.Frames; k++)
+                if (new Vector2(t.Path[k * 5 + 5] - t.Path[k * 5], t.Path[k * 5 + 6] - t.Path[k * 5 + 1]).Length() > 300f)
+                {
+                    t.Path = t.Path[..((k + 1) * 5)];
+                    if (t.Death >= k + 1) t.Death = -1;
+                    break;
+                }
+        return s;
     }
 
     void CmdReplay(CCSPlayerController? p, CommandInfo c)
@@ -398,11 +554,11 @@ public partial class CoachReplay : BasePlugin
     {
         if (cur == null) return;
         var g = ++generation;
-        gone.Clear(); free.Clear(); contact.Clear(); engaged.Clear(); sawYou.Clear();
-        if (mode == "actor" && !Humans().Any()) { phase = "waiting"; return; }   // starts when you join
+        gone.Clear(); free.Clear(); contact.Clear(); engaged.Clear(); sawYou.Clear(); botHop.Clear(); botAt.Clear(); spawnHeldN.Clear(); wayHead.Clear(); botStill.Clear(); botProg.Clear(); botFrozen.Clear(); botGround.Clear(); stepTries.Clear();
+        if (mode == "actor" && !Humans().Any() && !selftest) { phase = "waiting"; return; }   // starts when you join
         phase = "setup";
         // the same situation again: the same bots, only a clean round (fast retries)
-        var diff = drill?.Mode == "defend" ? Math.Max(0, difficulty - 1) : difficulty;   // a defense: three at a time, one level easier
+        var diff = drill?.Mode == "defend" ? Math.Max(0, BotLv - 1) : BotLv;   // a defense: three at a time, one level easier
         var key = $"{cur.Id}|{mode}|{diff}";
         if (builtFor == key && bots.Count > 0 && bots.Keys.All(sl => Utilities.GetPlayerFromSlot(sl) is { IsValid: true, IsBot: true }))
         {
@@ -423,6 +579,10 @@ public partial class CoachReplay : BasePlugin
             Teams();
             awaitRestart = true;
             Server.ExecuteCommand("mp_restartgame 1");
+            // no round start 4 s on: placed anyway (29/10, lab 15: Anubis's R15 and Cache's R13, a bomb's situations whose
+            // bots had all been freed at the window's end: their retry never started, nothing logged, the session gave up)
+            Log("retry {id}: round restart asked", cur.Id);
+            AddTimer(4f, () => { if (g == generation && awaitRestart) { awaitRestart = false; Log("retry {id}: no round start in 4 s, placed anyway", cur?.Id); Place(); } });
             return;
         }
         bots.Clear();
@@ -569,6 +729,7 @@ public partial class CoachReplay : BasePlugin
     {
         if (!awaitRestart || cur == null) return HookResult.Continue;
         awaitRestart = false;
+        Log("retry {id}: round started", cur.Id);
         var g = generation;
         AddTimer(0.3f, () => { if (g == generation) Place(); });
         return HookResult.Continue;
@@ -600,12 +761,59 @@ public partial class CoachReplay : BasePlugin
         pawn.MoveType = on ? MoveType_t.MOVETYPE_OBSOLETE : MoveType_t.MOVETYPE_WALK;
         Schema.SetSchemaValue(pawn.Handle, "CBaseEntity", "m_nActualMoveType", on ? 1 : 2);
         Utilities.SetStateChanged(pawn, "CBaseEntity", "m_MoveType");
+        // the game told of the actual one too (22/10, his test video: "je suis encore avec le bug noclip": walking on
+        // the server while his game still predicted the noclip it had been in, "à moitié en train de voler")
+        try { Utilities.SetStateChanged(pawn, "CBaseEntity", "m_nActualMoveType"); } catch (Exception) { }
     }
 
     // a still target's view on its angle, crouched or standing, every tick (its own AI idles: bot_zombie)
+    readonly Dictionary<int, int> botHop = new();   // a driven bot in a crouch-jump: its slot -> the tick it jumped
+    // a driven bot's place the tick before (its real speed: the game's kept the speed it was given while it was stuck in
+    // something, 17/10), and for how many ticks it hasn't moved while its way runs
+    readonly Dictionary<int, Vector3> botAt = new();
+    readonly Dictionary<int, int> botStill = new();
+    readonly Dictionary<int, int> botFrozen = new();   // for how many ticks it hasn't moved a hair though it was given a speed
+    readonly Dictionary<int, bool> botGround = new();   // on the ground before this tick's teleport (a teleport clears the flag)
+    readonly Dictionary<int, int> stepTries = new();   // its step hops since it last ran freely
+
+    // put on its start again (a drill's start, a wave's respawn): what was measured of its motion before is no more
+    // where a grenade thrown so comes down first, about (0.05 s steps, the game's 0.4 gravity, its first hit): within r of a spot
+    static bool NadeLandsNear(Nade nd, CCSPlayerPawn by, Vector3 spot, float r)
+    {
+        var p = new Vector3(nd.P[0], nd.P[1], nd.P[2]);
+        var v = new Vector3(nd.V[0], nd.V[1], nd.V[2]);
+        var opt = new TraceOptions { InteractsWith = Masks.ShotBrushOnly };
+        for (int k = 0; k < 80; k++)
+        {
+            var q = p + v * 0.05f;
+            v.Z -= 320f * 0.05f;
+            float fr;
+            try { fr = Trace.TraceEndShape(new CVector(p.X, p.Y, p.Z), new CVector(q.X, q.Y, q.Z), by, opt).Fraction; }
+            catch (Exception) { return false; }
+            if (fr < 1f) { p = Vector3.Lerp(p, q, fr); break; }
+            p = q;
+        }
+        return new Vector2(p.X - spot.X, p.Y - spot.Y).Length() < r;
+    }
+
+    void ForgetMotion(int slot)
+    {
+        botAt.Remove(slot); botStill.Remove(slot); botProg.Remove(slot); botFrozen.Remove(slot); stepTries.Remove(slot); botHop.Remove(slot); wayK.Remove(slot); walkAsk.Remove(slot);
+        spawnHeldN.Remove(slot); wayHead.Remove(slot);
+    }
+    readonly Dictionary<int, int> spawnHeldN = new();   // ticks its way's clock waited for it on its spawn
+    readonly Dictionary<int, (int T, Vector3 At, float F)> botProg = new();   // its headway: from where, since when, its way's frame then
+
+    static void Crouch(CCSPlayerPawn pawn, bool on)
+    {
+        if (pawn.MovementServices == null) return;
+        var mv = new CCSPlayer_MovementServices(pawn.MovementServices.Handle);
+        if (mv.DuckOverride != on) mv.DuckOverride = on;
+    }
+
     static void HoldAim(CCSPlayerPawn pawn, Vector3 a, bool duck)
     {
-        if (pawn.EyeAngles is { } eye && (Math.Abs(eye.X - a.X) > 0.5f || Math.Abs(((eye.Y - a.Y + 540f) % 360f) - 180f) > 0.5f))
+        if (pawn.EyeAngles is { } eye && (Math.Abs(eye.X - a.X) > 0.01f || Math.Abs(((eye.Y - a.Y + 540f) % 360f) - 180f) > 0.01f))
         { eye.X = a.X; eye.Y = a.Y; Utilities.SetStateChanged(pawn, "CCSPlayerPawn", "m_angEyeAngles"); }
         if (pawn.MovementServices != null)
         {
@@ -621,10 +829,9 @@ public partial class CoachReplay : BasePlugin
         try { ConVar.Find("bot_zombie")?.SetValue(on); } catch (Exception) { }
     }
 
-    static void BotStop(bool on)
-    {
-        try { ConVar.Find("bot_stop")?.SetValue(on); } catch (Exception) { }
-    }
+    // by the console (28/10 23:03: SetValue(true) on bot_stop crashed the server, an access violation in the native
+    // SetConvarValue, his game on it; false had never failed)
+    static void BotStop(bool on) => Server.ExecuteCommand($"bot_stop {(on ? 1 : 0)}");
 
     // a kill in an aim drill: the magazine full again, like on aim maps (07/10: "à chaque fois que je tue quelqu'un, je
     // redeviens full chargeur"); never a sniper's ("au sniper les balles c'est important")
@@ -657,22 +864,77 @@ public partial class CoachReplay : BasePlugin
     // yaw; you look up or down yourself
     static Vector3 Upright(Vector3 ang) => new(0, ang.Y, 0);
 
-    // the map's doors near these points opened (a door in the way of a real player's path was open in the match; one
-    // in a grenade's way, open for the pro who threw it)
+    // the map's doors near these points (a door in the way of a real player's path was open in the match; one in a
+    // grenade's way, open for the pro who threw it): each turned, without its motion, to whichever of its states (open
+    // one way, the other, closed) leaves these points the freest. 17/10, the self-test and css_dbgdoor: the game's "Open"
+    // swung Overpass's B door into the attackers' way (the real players had it open the other way), and its motion
+    // leaves an entity_blocker over its swing
     void OpenDoors(IEnumerable<Vector3> pts, float r = 96f)
     {
-        var doors = Utilities.FindAllEntitiesByDesignerName<CBaseEntity>("prop_door_rotating")
-            .Where(d => d.IsValid && d.AbsOrigin != null).Select(d => (d, o: new Vector3(d.AbsOrigin!.X, d.AbsOrigin.Y, d.AbsOrigin.Z))).ToList();
+        var doors = Utilities.FindAllEntitiesByDesignerName<CPropDoorRotating>("prop_door_rotating").Where(d => d.IsValid && d.AbsOrigin != null).ToList();
         if (doors.Count == 0) return;
-        var open = new HashSet<uint>();
-        foreach (var p in pts)
-            foreach (var (d, o) in doors)
-                if (!open.Contains(d.Index) && Vector3.DistanceSquared(p, o) < r * r)
-                {
-                    d.AcceptInput("Open");
-                    open.Add(d.Index);
-                }
-        if (open.Count > 0) Log("{n} door(s) opened", open.Count);
+        var all = pts.ToList();
+        var set = 0;
+        foreach (var d in doors)
+        {
+            var h = new Vector3(d.AbsOrigin!.X, d.AbsOrigin.Y, d.AbsOrigin.Z);
+            var near = all.Where(p => Vector3.DistanceSquared(p, h) < r * r).ToList();
+            if (near.Count == 0 || d.Collision is not { } col) continue;
+            // its leaf: its longer side in its own frame, from the hinge (its origin)
+            var alongY = col.Maxs.Y - col.Mins.Y >= col.Maxs.X - col.Mins.X;
+            float lo = alongY ? col.Mins.Y : col.Mins.X, hi = alongY ? col.Maxs.Y : col.Maxs.X;
+            float zlo = h.Z + col.Mins.Z - 8f, zhi = h.Z + col.Maxs.Z;
+            int Crossed(QAngle a)
+            {
+                var th = a.Y * MathF.PI / 180f;
+                var axis = alongY ? new Vector2(-MathF.Sin(th), MathF.Cos(th)) : new Vector2(MathF.Cos(th), MathF.Sin(th));
+                var h2 = new Vector2(h.X, h.Y);
+                return near.Count(p => p.Z > zlo && p.Z < zhi && SegDist(new Vector2(p.X, p.Y), h2 + axis * lo, h2 + axis * hi) < 18f);
+            }
+            var best = new[] { d.RotationOpenForward, d.RotationOpenBack, d.RotationClosed }.OrderBy(Crossed).First();   // open first on a tie
+            d.Teleport(null, new Vector3(best.X, best.Y, best.Z), null);
+            set++;
+        }
+        if (set > 0) Log("{n} door(s) set", set);
+    }
+
+    // the map's other doors (a gate or a panel the map's own logic moves: a prop_dynamic) a way goes right through:
+    // open in that match, out of the way here, neither seen nor solid (17/10, the self-test: cs_shelter's gate at -964
+    // 1094, closed here, the bots stopped against it). A thin, wide, tall one only, crossed within its width
+    void OpenGates(List<Vector3> pts)
+    {
+        var n = 0;
+        foreach (var e in Utilities.FindAllEntitiesByDesignerName<CBaseModelEntity>("prop_dynamic"))
+        {
+            if (!e.IsValid || e.AbsOrigin == null || e.Collision is not { } col || col.SolidType == SolidType_t.SOLID_NONE) continue;
+            float sx = col.Maxs.X - col.Mins.X, sy = col.Maxs.Y - col.Mins.Y, sz = col.Maxs.Z - col.Mins.Z;
+            if (Math.Min(sx, sy) > 16f || Math.Max(sx, sy) < 40f || sz < 48f) continue;
+            var thinX = sx < sy;
+            var o = e.AbsOrigin;
+            var th = (e.AbsRotation?.Y ?? 0f) * MathF.PI / 180f;
+            float cs = MathF.Cos(th), sn = MathF.Sin(th);
+            bool Through(Vector3 p)
+            {   // in its own frame: within 8 u of its plane, inside its width and height
+                float dx = p.X - o.X, dy = p.Y - o.Y, lx = dx * cs + dy * sn, ly = -dx * sn + dy * cs, lz = p.Z - o.Z;
+                var thin = thinX ? lx > col.Mins.X - 8f && lx < col.Maxs.X + 8f : ly > col.Mins.Y - 8f && ly < col.Maxs.Y + 8f;
+                var wide = thinX ? ly > col.Mins.Y + 4f && ly < col.Maxs.Y - 4f : lx > col.Mins.X + 4f && lx < col.Maxs.X - 4f;
+                return thin && wide && lz > col.Mins.Z - 8f && lz < col.Maxs.Z;
+            }
+            if (!pts.Any(Through)) continue;
+            e.AcceptInput("DisableCollision");
+            e.RenderMode = RenderMode_t.kRenderNone;
+            Utilities.SetStateChanged(e, "CBaseModelEntity", "m_nRenderMode");
+            n++;
+            Log("gate out of the way: #{i} at {x:F0} {y:F0} {z:F0}", e.Index, o.X, o.Y, o.Z);
+        }
+        if (n > 0) Log("{n} gate(s) out of the way", n);
+    }
+
+    static float SegDist(Vector2 p, Vector2 a, Vector2 b)
+    {
+        var ab = b - a;
+        var t = Math.Clamp(Vector2.Dot(p - a, ab) / Math.Max(1e-3f, ab.LengthSquared()), 0f, 1f);
+        return Vector2.Distance(p, a + ab * t);
     }
 
     // the map's breakables near these points broken (a vent cover, a window the players went through). Nuke's vent is a
@@ -685,6 +947,9 @@ public partial class CoachReplay : BasePlugin
             {
                 if (!e.IsValid || e.AbsOrigin == null) continue;
                 var name = (e.Entity?.Name ?? "").ToLowerInvariant();
+                // its model's name too (29/10, Cache's two vents: prop_dynamic with no name, models/de_cache_s2/newvent/newvent.vmdl;
+                // the user: "les vents ... pas cassées alors que dans la situation réelle elles sont supposées être cassées")
+                if (cls == "prop_dynamic") name += " " + (e.CBodyComponent?.SceneNode?.GetSkeletonInstance()?.ModelState.ModelName ?? "").ToLowerInvariant();
                 if (cls == "prop_dynamic" && (e.Health <= 0 || !(name.Contains("vent") || name.Contains("window") || name.Contains("glass")))) continue;
                 var o = new Vector3(e.AbsOrigin.X, e.AbsOrigin.Y, e.AbsOrigin.Z);
                 if (pts.Any(p => Vector3.DistanceSquared(p, o) < r * r)) { e.AcceptInput("Break"); n++; Log("broken: {c} {n}", cls, name); }
@@ -704,6 +969,7 @@ public partial class CoachReplay : BasePlugin
     {
         if (drill?.Mode == "crossfire" && phase == "live" && CfPlant(c, t)) return;   // Crossfire: it stops there and fights you (14/10)
         if (!free.Add(slot)) return;
+        if (FightScripted(slot, c, t)) return;   // css_scripted: it fights by the plugin's hand, not the game's AI
         var pw = c.PlayerPawn.Value;
         if (pw != null && pw.IsValid) Freeze(pw, false);
         if (phase == "live") Arm(c, t);
@@ -724,6 +990,75 @@ public partial class CoachReplay : BasePlugin
     }
 
     static Vector3 Pos(Track t, int i) => new(t.Path[i * 5], t.Path[i * 5 + 1], t.Path[i * 5 + 2]);
+
+    // 17/10 (the self-test: 2 of 3 bots put back up or down were where the real player had jumped, onto a box, a ledge,
+    // over a rail: the bot ran into it while its way went 57 u up, then a teleport): the jumps of its way, read from its
+    // height alone. A takeoff from flat ground, its peak 30 to 75 u up 0.19 to 0.5 s later, then down again (a stair goes
+    // on up). Not from a rush's 0.5 s samples
+    List<(int F, float Rise)> JumpsOf(Track t)
+    {
+        if (t.Jumps != null && ReferenceEquals(t.JumpsFor, t.Path)) return t.Jumps;
+        var js = new List<(int F, float Rise)>();
+        var fps = (cur?.Rate ?? 64) / (float)Math.Max(1, cur?.Step ?? 2);
+        if (fps >= 16f)
+        {
+            float Z(int k) => t.Path[k * 5 + 2];
+            int lo = (int)(0.19f * fps), hi = (int)(0.5f * fps), look = (int)(0.65f * fps);
+            int back = Math.Max(2, (int)(0.1f * fps)), down = Math.Max(3, (int)(0.2f * fps));
+            for (var k = back; k < t.Frames - lo; k++)
+            {
+                if (Z(k + 1) - Z(k) <= 96f / fps || Math.Abs(Z(k) - Z(k - back)) >= 6f) continue;
+                var m = k;
+                for (var j = k + 1; j <= Math.Min(t.Frames - 1, k + look); j++) if (Z(j) > Z(m)) m = j;
+                var rise = Z(m) - Z(k);
+                var after = Math.Min(t.Frames - 1, m + down);
+                // down again after its peak, or slowing as a thrown body does (its first half twice its second: a crouch-
+                // jump onto a box landed at its peak; a stair climbs evenly)
+                var ballistic = Z(k + (m - k) / 2) - Z(k) >= 1.8f * (Z(m) - Z(k + (m - k) / 2));
+                if (m - k < lo || m - k > hi || rise < 30f || rise > 75f || (after - m == down && Z(after) > Z(m) - 3f && !ballistic)) continue;
+                js.Add((k, rise));
+                k = m;
+            }
+        }
+        t.JumpsFor = t.Path;
+        t.JumpDone = -1;
+        return t.Jumps = js;
+    }
+
+    // the jump of its way it has come to: at its takeoff by its own pace (a bot behind its way's clock jumps where the
+    // player did, not when), the height it rises; null when none
+    float? JumpHere(Track t, int i, Vector3 here, float speed)
+    {
+        var fps = cur!.Rate / (float)cur.Step;
+        foreach (var (k, rise) in JumpsOf(t))
+        {
+            if (k <= t.JumpDone) continue;
+            if (k > i + (int)(0.5f * fps)) break;   // far ahead of it yet
+            if (k < i - (int)fps) { t.JumpDone = k; continue; }   // a second behind: let go
+            var p = Pos(t, k);
+            if (Math.Abs(p.Z - here.Z) > 24f) continue;   // not on that level
+            var q = Pos(t, Math.Min(t.Frames - 1, k + 2)) - Pos(t, Math.Max(0, k - 2));
+            var dir = new Vector2(q.X, q.Y);
+            var rel = new Vector2(here.X - p.X, here.Y - p.Y);
+            var reach = Math.Max(10f, speed * 2.5f / 64f);   // two ticks and a half of its run
+            var at = dir.Length() < 8f
+                ? rel.Length() <= 16f   // a jump on the spot
+                : Vector2.Dot(rel, Vector2.Normalize(dir)) >= -reach && Math.Abs(rel.X * dir.Y - rel.Y * dir.X) / dir.Length() < 56f;   // beside its way by what it jumped onto (Inferno's Banana: 41 u)
+            if (!at) continue;
+            t.JumpDone = k;
+            return rise;
+        }
+        return null;
+    }
+
+    // its way climbs or comes down on the spot there (a ladder): no legs climb one, it is carried along its way
+    static bool Climbing(Track t, int i, int half)
+    {
+        var a = Pos(t, Math.Max(0, i - half));
+        var b = Pos(t, Math.Min(t.Frames - 1, i + half));
+        var dz = Math.Abs(b.Z - a.Z);
+        return dz > 20f && new Vector2(b.X - a.X, b.Y - a.Y).Length() < 0.5f * dz;
+    }
     static Vector3 Ang(Track t, int i) => new(t.Path[i * 5 + 4], t.Path[i * 5 + 3], 0);
 
     // everyone on the first frame, loadouts of the demo, 3 s to look around, then it plays. The doors the real players
@@ -732,10 +1067,15 @@ public partial class CoachReplay : BasePlugin
     void Place()
     {
         if (cur == null) return;
-        var went = cur.Players.SelectMany(t => Enumerable.Range(0, t.Frames).Where(k => k % 4 == 0).Select(k => Pos(t, k)))
-            .Concat(cur.Trail.Where(p => p.Length >= 3).Select(p => new Vector3(p[0], p[1], p[2]))).ToList();
+        // a defense's later waves too: their ways are its other tracks (17/10, the self-test: Nuke's attackers stuck at
+        // the ramp's doors, closed for every way but the first wave's)
+        var ways = cur.Players.Select(t => t.Path).Concat(drill?.Tracks.Select(x => x.Path) ?? Enumerable.Empty<float[]>());
+        var went = ways.SelectMany(p => Enumerable.Range(0, p.Length / 5).Select(k => new Vector3(p[k * 5], p[k * 5 + 1], p[k * 5 + 2])))
+            .Concat(cur.Trail.Where(p => p.Length >= 3).Select(p => new Vector3(p[0], p[1], p[2]))).ToList();   // every frame: a door's leaf is 2 u thick
         OpenDoors(went);
-        Break(went);   // a vent the players went through was broken (06/10, Nuke: "la vent est censée être cassée")
+        OpenGates(went);
+        navBlocked.Clear(); navProg.Clear();   // the passages found shut: anew with this drill's doors (Nav.cs)
+        Break(went.Where((_, k) => k % 4 == 0).ToList());   // a vent the players went through was broken (06/10, Nuke: "la vent est censée être cassée")
         foreach (var (slot, t) in bots)
         {
             var c = Utilities.GetPlayerFromSlot(slot);
@@ -746,9 +1086,19 @@ public partial class CoachReplay : BasePlugin
             var pw = c.PlayerPawn.Value;
             if (pw == null) continue;
             pw.Teleport(Pos(t, 0), Upright(Ang(t, 0)), Vector3.Zero);
-            Freeze(pw, t.Hold);
+            // a boost's teammate walking, still by bot_zombie (27/10 21:24, Dust2's Top Mid: on a frozen one, the game had you
+            // off the ground at 64 shots of 66, the AWP's in-air spread; the 16 u put-back alone did not change it)
+            Freeze(pw, t.Hold && t.Sid != "mate");
+            ForgetMotion(slot);
         }
         var me = cur.Players.FirstOrDefault(t => t.Me);
+        if (drill?.Mate != null)   // 24/10: a boost's player left at the spawn, what happens told
+            foreach (var h in Humans())
+            {
+                var hh = h;
+                Log("place: boost, you team {t} (drill's {d}), mode {m}, to {p}", (int)h.Team, me?.Team ?? -1, mode, me == null ? "-" : R3(Pos(me, 0)));
+                AddTimer(0.6f, () => { var o = hh.PlayerPawn.Value?.AbsOrigin; if (o != null) Log("place: boost, you at {x:F0} {y:F0} {z:F0}", o.X, o.Y, o.Z); });
+            }
         if (mode == "actor" && me != null)
             foreach (var h in Humans())
             {
@@ -757,9 +1107,41 @@ public partial class CoachReplay : BasePlugin
                 Loadout(h, me, cur.Kind is "death" or "clutch" ? Math.Max(MinHp, me.Hp) : null);
                 var pawn = h.PlayerPawn.Value;
                 if (pawn == null) continue;
-                pawn.Teleport(Pos(me, 0), Upright(Ang(me, 0)), Vector3.Zero);
+                // a boost: 10 u over the teammate's head, dropped onto it (24/10, the real test of Mirage's Short boost: put
+                // 0.5 u over the crouched one's top, both boxes touching, the move refused and you left at your spawn).
+                // Over its STANDING head at least (28/10, lab 4, Dust2's Top Mid: put 10 u over the crouched one's top before
+                // it had crouched, inside its standing box: both stuck, your feet 8.5 u in its head, never on the ground)
+                var mz = drill?.Mate?.Pos is { Length: >= 3 } mp3 ? mp3[2] : float.NaN;
+                var up = drill?.Mate != null ? new Vector3(0f, 0f, float.IsNaN(mz) ? 10f : Math.Max(10f, mz + 72f + 4f - Pos(me, 0).Z)) : Vector3.Zero;
+                pawn.Teleport(Pos(me, 0) + up, Upright(Ang(me, 0)), Vector3.Zero);
                 Freeze(pawn, true);
+                if (drill?.Mate == null) continue;
+                // a boost: held over it while the teammate settles and crouches, then put 2 u over its box's real top and let go
+                // (28/10, lab 5: on a crouched one settled on the floor, put 10 u to -0.3 u over its top, you were on the
+                // ground 63 ticks of 63; dropped on it while it crouched under you it rose 9 u into your feet)
+                var hp = pawn; var at = Pos(me, 0); var ang = Upright(Ang(me, 0)); var gen = generation;
+                AddTimer(0.5f, () =>
+                {
+                    if (gen != generation || !hp.IsValid) return;
+                    var mt = bots.FirstOrDefault(b => b.Value.Sid == "mate");
+                    var ms = mt.Value == null ? null : Utilities.GetPlayerFromSlot(mt.Key)?.PlayerPawn.Value;
+                    // crouched just after its teleport (off the ground for the game) it went 9 u up and stayed there (28/10, lab 6:
+                    // z 9.2-10.9 on a 0.2-1.9 spot, your head in Top Mid's arch): back on its spot first
+                    if (ms?.AbsOrigin is { } mo0 && mt.Value != null && mo0.Z - Pos(mt.Value, 0).Z > 2f) ms.Teleport(Pos(mt.Value, 0), null, Vector3.Zero);
+                    AddTimer(0.25f, () =>
+                    {
+                        if (gen != generation || !hp.IsValid) return;
+                        var ok = ms is { IsValid: true, AbsOrigin: not null, Collision: not null };
+                        var z = ok ? ms!.AbsOrigin!.Z + ms.Collision!.Maxs.Z + 2f : at.Z + 10f;
+                        hp.Teleport(new Vector3(at.X, at.Y, z), ang, Vector3.Zero);
+                        Freeze(hp, false);
+                        Log("place: boost, you over its top at {z:F1} (its z {m:F1}, maxs {x:F1})", z, ok ? ms!.AbsOrigin!.Z : 0f, ok ? ms!.Collision!.Maxs.Z : 0f);
+                    });
+                });
             }
+        LookSay(); WalkSay(); MoveSay(); BehSay(); roams.Clear(); utilDone.Clear(); sideSeen[2].Clear(); sideSeen[3].Clear(); sideHeard[2].Clear(); sideHeard[3].Clear();
+        fighters.Clear(); fightTries = 0; lookNow.Clear(); lookPick.Clear(); wayEyes.Clear(); wayK.Clear(); walkAsk.Clear(); wayBackAt.Clear(); huntProg.Clear(); navWay.Clear(); knifeOut.Clear(); sitHunt = false; foeSeenOnce = false; sitExch = -1;
+        if (scripted) { LookLoad(); MoveLoad(); BehLoad(); NavLoad(); }   // where bots look and what they do there, for this map (Look.cs, Move.cs, Behavior.cs)
         kills = dmg = 0; devSum = 0; devN = 0;
         humanDead = traded = false; tradeKiller = -1;
         // the demo's plant: already down at the start, or later by its planter (yours later: you plant it yourself)
@@ -808,9 +1190,173 @@ public partial class CoachReplay : BasePlugin
         return true;
     }
 
+    // the bots as they are, for the real-client test that plays the drills in his own game (22/10 eve, tools/real_client.py,
+    // out/selftest/logs/play_module.py): coach/bots_live.json, 16 times a second while a drill is live (the server's own
+    // state, written by the plugin: nothing read from the game's memory)
+    int botsLiveAt, botsLiveBusy;
+    readonly List<Dictionary<string, object?>> meImpacts = new(), meHits = new(), meRawImpacts = new();
+    int meImpactTick = -1;
+
+    // your bullet by one of the plugin's bots (160 u): it turns to you as a player turns to a shot that missed him by a little
+    // (30/10, the user: "ils ne réagissent pas quand je leur tire dessus ou quand je tire à côté")
+    void ShotNear(CCSPlayerController h, Vector3 at, Vector3 from)
+    {
+        // never a crossfire's: its enemies wait behind their cover for their peek (30/10, his review: the spray's second one
+        // stopped where his spray at the first one landed, never out, "plus de balles")
+        if (!ScriptedDrill || phase != "live" || drill?.Mode == "crossfire") return;
+        foreach (var (sl, t) in bots.ToList())
+        {
+            if (t.Team == h.TeamNum || Utilities.GetPlayerFromSlot(sl) is not { IsValid: true, PawnIsAlive: true } c || c.PlayerPawn.Value?.AbsOrigin is not { } bo) continue;
+            if (Vector3.Distance(new Vector3(bo.X, bo.Y, bo.Z + 36f), at) > 160f) continue;
+            if (!fighters.ContainsKey(sl) && !t.Strafe) Free(sl, c, t);
+            if (fighters.TryGetValue(sl, out var fh))
+            { fh.HurtBy = h.Slot; fh.HurtAt = Server.TickCount; fh.Last = from; fh.HasLast = true; fh.LastSeen = Server.TickCount; }
+        }
+    }
+
+    void MeImpact(EventBulletImpact e)
+    {
+        if (e.Userid is not { IsValid: true, IsBot: false } h || h.PlayerPawn.Value is not { AbsOrigin: { } mo } mpw) return;
+        ShotNear(h, new Vector3(e.X, e.Y, e.Z), new Vector3(mo.X, mo.Y, mo.Z + 62f));
+        var now = Server.TickCount;
+        if (now == meImpactTick) return;   // a bullet through a wall: its first impact only
+        meImpactTick = now;
+        var eye = new Vector3(mo.X, mo.Y, mo.Z + (mpw.ViewOffset?.Z ?? 64f));
+        var d = new Vector3(e.X, e.Y, e.Z) - eye;
+        var len = d.Length();
+        if (len < 1f) return;
+        var u = d / len;
+        // the impact itself and the eyes it left from (27/10: which view a shot sent right after a setang took)
+        meRawImpacts.Add(new() { ["t"] = now, ["at"] = new[] { R1(e.X), R1(e.Y), R1(e.Z) }, ["eye"] = new[] { R1(eye.X), R1(eye.Y), R1(eye.Z) },
+            ["yaw"] = R1(MathF.Atan2(u.Y, u.X) * 180f / MathF.PI), ["pitch"] = R1(-MathF.Asin(Math.Clamp(u.Z, -1f, 1f)) * 180f / MathF.PI),
+            ["eyeang"] = mpw.EyeAngles is { } ea0 ? new[] { R1(ea0.X), R1(ea0.Y) } : null });
+        if (meRawImpacts.Count > 12) meRawImpacts.RemoveAt(0);
+        var side = Vector3.Normalize(new Vector3(u.Y, -u.X, 0));   // to the right as you look along it
+        Dictionary<string, object?>? best = null;
+        var bestMiss = float.MaxValue;
+        foreach (var c in Utilities.GetPlayers())
+        {
+            if (c is not { IsValid: true, IsBot: true } || !c.PawnIsAlive || c.TeamNum == h.TeamNum || c.PlayerPawn.Value is not { AbsOrigin: { } o } pw) continue;
+            var head = new Vector3(o.X, o.Y, o.Z + (pw.ViewOffset?.Z ?? 64f) - 2f);
+            var along = Vector3.Dot(head - eye, u);
+            if (along <= 0) continue;
+            var miss = eye + u * along - head;   // where the line went by, from the head's centre (not rewound to your view)
+            if (miss.Length() >= bestMiss) continue;
+            bestMiss = miss.Length();
+            best = new() { ["t"] = now, ["slot"] = c.Slot, ["across"] = R1(Vector3.Dot(miss, side)), ["up"] = R1(miss.Z), ["dist"] = R1(along),
+                ["wall"] = len < along - 16f };
+        }
+        if (best == null) return;
+        meImpacts.Add(best);
+        if (meImpacts.Count > 12) meImpacts.RemoveAt(0);
+    }
+
+
+    void BotsLive()
+    {
+        var now = Server.TickCount;
+        var me = Humans().FirstOrDefault();
+        var mePw = me?.PlayerPawn.Value;
+        var shots = mePw?.ShotsFired ?? 0;   // a spray on: every tick, its recoil followed (26/10)
+        if ((now - botsLiveAt < (shots > 0 ? 1 : 2) && now >= botsLiveAt) || sess == null || phase != "live") return;   // 32 a second
+        if (Interlocked.Exchange(ref botsLiveBusy, 1) == 1) return;
+        botsLiveAt = now;
+        // your eyes, for a bullet's line to each of them (23/10: the game's spotting stays on a while after one is gone:
+        // the test shot magazines into walls)
+        CVector? meEye = mePw?.AbsOrigin is { } mo ? new CVector(mo.X, mo.Y, mo.Z + (mePw.ViewOffset?.Z ?? 64f)) : null;
+        var shotLine = new TraceOptions { InteractsWith = Masks.ShotBrushOnly };
+        var rows = new List<Dictionary<string, object?>>();
+        foreach (var c in Utilities.GetPlayers())
+        {
+            if (c is not { IsValid: true, IsBot: true } || !c.PawnIsAlive || c.PlayerPawn.Value is not { AbsOrigin: { } o } pw) continue;
+            var duck = pw.MovementServices == null ? 0f : new CCSPlayer_MovementServices(pw.MovementServices.Handle).DuckAmount;
+            // seen by you: the game's own spotting (its radar's line of sight)
+            var seen = me != null && me.Slot < 64 && (pw.EntitySpottedState.SpottedByMask[me.Slot / 32] & (1u << (me.Slot % 32))) != 0;
+            var eye = o.Z + (pw.ViewOffset?.Z ?? (64f - 18f * duck));   // its eyes: where its head is
+            // what of it a bullet of yours gets to now: its head, else its chest (nothing in between but players)
+            string? los = null;
+            var chest = false;   // its chest in your line too (27/10, Cache's Quad spray: aimed at a chest behind a crate, 14 bullets in it)
+            float[]? part = null;   // neither: the first of its other parts a bullet gets to (27/10, Anubis's Canals boost: its
+            // second one 10 s in the base's sight from there, head and chest behind a crate, never shot at)
+            if (meEye != null && me!.PawnIsAlive)
+            {
+                chest = Trace.TraceEndShape(meEye, new CVector(o.X, o.Y, eye - 22f), mePw!, shotLine).Fraction > 0.98f;
+                if (Trace.TraceEndShape(meEye, new CVector(o.X, o.Y, eye - 2f), mePw!, shotLine).Fraction > 0.98f) los = "head";
+                else if (chest) los = "chest";
+                else
+                {
+                    var sx = meEye.Y - o.Y; var sy = -(meEye.X - o.X); var sn = MathF.Max(1f, MathF.Sqrt(sx * sx + sy * sy));
+                    foreach (var (up, side) in new[] { (-12f, 11f), (-12f, -11f), (-36f, 0f), (-46f, 0f), (-56f, 0f) })
+                    {
+                        var q = new CVector(o.X + side * sx / sn, o.Y + side * sy / sn, eye + up);
+                        if (Trace.TraceEndShape(meEye, q, mePw!, shotLine).Fraction > 0.98f) { los = "body"; part = new[] { R1(q.X), R1(q.Y), R1(q.Z) }; break; }
+                    }
+                }
+            }
+            rows.Add(new() { ["slot"] = c.Slot, ["name"] = c.PlayerName, ["team"] = c.TeamNum, ["pos"] = new[] { R1(o.X), R1(o.Y), R1(o.Z) }, ["duck"] = MathF.Round(duck, 2),
+                ["eye"] = R1(eye), ["seen"] = seen, ["los"] = los, ["chest"] = chest, ["part"] = part, ["hp"] = pw.Health,
+                // its speed now, the server's (02/11: the driver's from two reads lagged a bot slowing to shoot, its MAG-7
+                // led 30-35 u past them at 150 u)
+                ["vel"] = pw.AbsVelocity is { } bv ? new[] { R1(bv.X), R1(bv.Y), R1(bv.Z) } : null,
+                // its body's top for the game (28/10, the user on the boosts: "vérifie que le joueur n'est pas un tout petit peu
+                // en conflit avec la tête du bot en dessous"): its collision box's height over its feet
+                ["top"] = pw.Collision is { } cb ? R1(o.Z + cb.Maxs.Z) : null });
+        }
+        // your recoil as the server has it (26/10, his order: "perfectionne-toi sur toute la partie spray"): a bullet leaves
+        // along your eyes plus twice the aim punch (weapon_recoil_scale), its base at its tick and how fast it moves
+        float[]? punch = null, punchVel = null;
+        int punchTick = 0;
+        if (mePw?.AimPunchServices is { } aps)
+        {
+            punch = new[] { MathF.Round(aps.PredictableBaseAngle.X, 3), MathF.Round(aps.PredictableBaseAngle.Y, 3) };
+            punchVel = new[] { MathF.Round(aps.PredictableBaseAngleVel.X, 3), MathF.Round(aps.PredictableBaseAngleVel.Y, 3) };
+            punchTick = aps.PredictableBaseTick;
+        }
+        var json = JsonSerializer.Serialize(new Dictionary<string, object?> { ["t"] = now, ["drill"] = drill?.Id, ["mode"] = drill?.Mode, ["kind"] = cur?.Kind,
+            ["me_team"] = me?.TeamNum, ["me_alive"] = me?.PawnIsAlive ?? false, ["me_scoped"] = mePw?.IsScoped ?? false,
+            ["me_hp"] = mePw?.Health,   // your health (02/11: the driver hides once hurt, as a player does)
+            ["me_shots"] = shots, ["me_punch"] = punch, ["me_punch_vel"] = punchVel, ["me_punch_tick"] = punchTick,
+            ["me_ang"] = mePw?.EyeAngles is { } ea ? new[] { MathF.Round(ea.X, 3), MathF.Round(ea.Y, 3) } : null, ["bots"] = rows,
+            ["me_impacts"] = meImpacts.ToList(), ["me_hits"] = meHits.ToList(), ["me_raw_impacts"] = meRawImpacts.ToList(),
+            ["me_eye"] = meEye is { } me3 ? new[] { R1(me3.X), R1(me3.Y), R1(me3.Z) } : null,   // where your bullets leave from (26/10: getpos's height checked)
+            // what is in your hands and its clip (27/10, Fachwerk's situation: shots with no bullet out, its clip empty,
+            // the test never reloaded)
+            ["me_weapon"] = mePw?.WeaponServices?.ActiveWeapon.Value?.DesignerName, ["me_clip"] = mePw?.WeaponServices?.ActiveWeapon.Value?.Clip1,
+            // how long before it can fire (s): a gun just drawn can't (30/10, round 13, Boulder's R8: the knife put away, three
+            // Deagle shots in its draw, no bullet out)
+            ["me_ready"] = mePw?.WeaponServices?.ActiveWeapon.Value is { IsValid: true } aw0 ? MathF.Round(MathF.Max(0f, (aw0.NextPrimaryAttackTick - Server.TickCount) / 64f), 2) : null,
+            // your speed (27/10, Nuke's Outside boost: scoped AWP shots 100-240 u off at 1888 u, the feet sliding on the head?)
+            ["me_vel"] = mePw?.AbsVelocity is { } mv ? new[] { R1(mv.X), R1(mv.Y), R1(mv.Z) } : null,
+            // on the ground for the game (27/10, Inferno's Banana boost on a crouched mate: AK taps 50-140 u off at 1034 u
+            // standing still, as if in the air)
+            ["me_ground"] = mePw != null && (mePw.Flags & (uint)PlayerFlags.FL_ONGROUND) != 0,
+            // how you move and what you stand on for the game (28/10, the boosts: off the ground on a bot's head at every
+            // shot; the user: "est-ce que c'est le jeu ... qui considère qu'on est en l'air", a noclip left by an Alt-Tab?)
+            ["me_move"] = mePw?.MoveType.ToString(), ["me_gent"] = mePw?.GroundEntity?.Value?.DesignerName,
+            ["me_feet"] = mePw?.AbsOrigin is { } mf ? R1(mf.Z) : null, ["me_mins"] = mePw?.Collision is { } mc ? R1(mc.Mins.Z) : null,
+            // the planted bomb (27/10, Inferno's R16 situation: 2 kills, then the bomb blew, the test never went to it)
+            ["bomb"] = BombLive(),
+            // a defense: the post held now (its index; its count: the free part) and the bombsite's own box (30/10, the user:
+            // "si c'est zone libre, ben le bon site"): the test driver moves in it to take its duels one by one
+            ["post"] = drill?.Mode == "defend" ? postIdx : null,
+            ["site_box"] = drill?.Mode == "defend" && SiteBox() is { } sbx ? new[] { R1(sbx.Lo.X), R1(sbx.Lo.Y), R1(sbx.Lo.Z), R1(sbx.Hi.X), R1(sbx.Hi.Y), R1(sbx.Hi.Z) } : null });
+        if (!Io(() =>
+            {
+                try
+                {
+                    var f = System.IO.Path.Combine(Dir, "bots_live.json");
+                    File.WriteAllText(f + ".tmp", json);
+                    File.Move(f + ".tmp", f, true);
+                }
+                catch (Exception) { }
+                finally { botsLiveBusy = 0; }
+            })) botsLiveBusy = 0;
+    }
+
     void OnTick()
     {
         while (toGame.TryDequeue(out var back)) { try { back(); } catch (Exception e) { Log("io: {m}", e.Message); } }
+        try { BeamTick(); } catch (Exception e) { Log("beams: {m}", e.Message); }
         // the center text (the drill's card) blinks off every second while the game rules say a restart is
         // pending: set on every tick (CS2FlashingHtmlHudFix, the workaround found by Poggu)
         rules ??= Utilities.FindAllEntitiesByDesignerName<CCSGameRulesProxy>("cs_gamerules").FirstOrDefault()?.GameRules;
@@ -820,6 +1366,7 @@ public partial class CoachReplay : BasePlugin
         if (now < hudSent) hudSent = 0;
         HudTick();
         CamTick();
+        BotsLive();
         CfRadar();   // a Crossfire enemy shown at a rep's start: on your radar too
         if (cur == null || (phase != "countdown" && phase != "live")) return;
         if (phase == "countdown" && now >= countdownEnd) Go();
@@ -830,6 +1377,12 @@ public partial class CoachReplay : BasePlugin
         if (seen != null)
             foreach (var sl in bots.Keys)
                 if ((seen[sl / 32] & (1u << (sl % 32))) != 0) sawYou[sl] = now;
+        BehSightTick();   // what each side sees of the other (Behavior.cs)
+        FightTick(mePawn, seen);   // the bots fighting by the plugin's hand (Combat.cs)
+        BotRecTick();   // css_botrec (BotRec.cs)
+        if (phase == "live") StepSounds();   // the bots' running steps (Behavior.cs)
+        var lookSmokes = scripted && lookTab.Count > 0 ? SmokesUp() : null;   // for where they look (Look.cs)
+        var sightSmokes = lookSmokes ?? (ScriptedDrill ? SmokesUp() : null);   // for what they see (Combat.cs)
         Vector3? mePos = mode == "actor" && mePawn?.AbsOrigin is { } mo ? new Vector3(mo.X, mo.Y, mo.Z) : null;
         var meSid = cur.Players.FirstOrDefault(t => t.Me)?.Sid ?? "";
         int maxFrames = 0;
@@ -839,8 +1392,14 @@ public partial class CoachReplay : BasePlugin
             if (free.Contains(slot) || gone.Contains(t.Sid)) continue;
             var c = Utilities.GetPlayerFromSlot(slot);
             var pawn = c?.PlayerPawn.Value;
-            if (c == null || pawn == null || !c.PawnIsAlive) { gone.Add(t.Sid); Log("gone {n} at {f}", t.Name, (int)f); continue; }
+            if (c == null || pawn == null || !c.PawnIsAlive)
+            {   // why, at a drill's very start (26/10: a boost's target gone at 0, killed by the world 8 s later: alive by then)
+                gone.Add(t.Sid);
+                Log("gone {n} at {f}{why}", t.Name, (int)f, f < 1 ? $" ({(c == null ? "no player" : pawn == null ? "no pawn" : $"life {pawn.LifeState}, hp {pawn.Health}, at {R3(pawn.AbsOrigin is { } go ? new Vector3(go.X, go.Y, go.Z) : Vector3.Zero)[2]}")})" : "");
+                continue;
+            }
             if (t.Strafe) continue;   // an aim map's strafing target: the session moves it
+            if (cfJiggling.Contains(slot)) continue;   // a Crossfire jiggle: it moves it itself (Crossfire.cs)
             if (t.Hold)
             {
                 // a target on its spot. A prefire's, a wallbang's or a flick's holds its angle and never fires (06/10: "fais
@@ -849,7 +1408,9 @@ public partial class CoachReplay : BasePlugin
                 // boost's bot, likely counted as in the air then (11/10, a tester: "22 boost didnt work. Scoped weapons
                 // are odd": a sniper's shot in the air goes anywhere)
                 var at0 = pawn.AbsOrigin;
-                if (at0 == null || Vector3.DistanceSquared(new Vector3(at0.X, at0.Y, at0.Z), Pos(t, 0)) > 4f)
+                // a boost's teammate: 16 u (27/10, the plugin's own on-ground flag: up on a crouched one you were off the
+                // ground at every shot, its 2 u put-back moving it under you)
+                if (at0 == null || Vector3.DistanceSquared(new Vector3(at0.X, at0.Y, at0.Z), Pos(t, 0)) > (t.Sid == "mate" ? 256f : 4f))
                     pawn.Teleport(Pos(t, 0), t.Still ? Upright(Ang(t, 0)) : null, Vector3.Zero);
                 if (t.Still) HoldAim(pawn, Ang(t, 0), t.Duck);
                 else if (phase == "live" && seen != null && (seen[slot / 32] & (1u << (slot % 32))) != 0) contact[slot] = contact.GetValueOrDefault(slot) + 1;
@@ -858,7 +1419,20 @@ public partial class CoachReplay : BasePlugin
             var ft = f - t.Start;
             var i = Math.Max(0, (int)ft);
             // a defense's attacker throws the grenades of the real hit it walks, at their moment
-            while (phase == "live" && t.NadeNext < t.TrackNades.Count && t.TrackNades[t.NadeNext].F <= ft) ThrowAs(c, pawn, t.TrackNades[t.NadeNext++]);
+            // only from where the real player threw it (96 u of its eyes; it waits 1.5 s at most to get there, else none): 29/10,
+            // lab 24, walking as a player, slower than the real one, it was in the blast of its own HE, killed by it twice
+            while (phase == "live" && t.NadeNext < t.TrackNades.Count && t.TrackNades[t.NadeNext].F <= ft)
+            {
+                var nd = t.TrackNades[t.NadeNext];
+                var eyeAt = pawn.AbsOrigin is { } no ? new Vector3(no.X, no.Y, no.Z + 64f) : Vector3.Zero;
+                // none on you in your first 10 s at a post (30/10, his review on Inferno's A: "je spawn à l'endroit qui se fait
+                // stuff", two smokes popped on Top Mid as he got there)
+                if (drill?.Mode == "defend" && Server.TickCount - postAt < 10 * 64 && NadeLandsNear(nd, pawn, DefendSpot(), 350f))
+                { Log("nade {t} of {n} not thrown: on your spot as you got there", nd.Type, t.Name); t.NadeNext++; }
+                else if (Vector3.Distance(eyeAt, new Vector3(nd.P[0], nd.P[1], nd.P[2])) < 96f) { ThrowAs(c, pawn, nd); t.NadeNext++; }
+                else if (ft - nd.F > 1.5f * cur.Rate / cur.Step) { Log("nade {t} of {n} not thrown: not where it was thrown from", nd.Type, t.Name); t.NadeNext++; }
+                else break;   // not there yet
+            }
             if (i >= t.Frames - 1 && drill?.Mode == "defend" && sess != null && !engaged.ContainsKey(slot)
                 && !(mePos is { } mp0 && pawn.AbsOrigin is { } bo && Vector3.Distance(mp0, new Vector3(bo.X, bo.Y, bo.Z)) < 1200))
             {   // a defense's attacker at the end of its way far from you: another one comes on a real way (06/10: "un mec
@@ -888,14 +1462,30 @@ public partial class CoachReplay : BasePlugin
             // joueurs"), then it plays on its own
             var eng = engaged.TryGetValue(slot, out var et);
             if (eng && Server.TickCount - et > EngageTicks) { Free(slot, c, t); continue; }
-            if (!eng && !t.Runner && phase == "live" && seen != null && (seen[slot / 32] & (1u << (slot % 32))) != 0 && (contact[slot] = contact.GetValueOrDefault(slot) + 1) >= (drill?.Mode == "crossfire" ? DuelReact : ReactTicks))
+            // your teammates never come in contact with you (29/10, lab 14: a teammate of the plugin's hand saw you, fought,
+            // found no enemy, went on its way at its start again, every 1.5 s)
+            var spots = seen != null && (seen[slot / 32] & (1u << (slot % 32))) != 0;
+            // css_scripted: it sees you as it does in its fight (29/10, the user: "un espèce de on-off"): you in front of its
+            // eyes, no smoke on the line, tick after tick. On the game's spotting alone it was freed with you behind it or in a
+            // smoke, stood staring at a wall, went on its way 1.5 s later and was freed again 0.2 s after
+            if (ScriptedDrill && t.Team != cur.Team && !eng)
+            {
+                if (spots) spots = SeesFront(slot, pawn, mePawn, sightSmokes);
+                if (!spots) contact.Remove(slot);
+            }
+            if (!eng && !t.Runner && phase == "live" && t.Team != cur.Team && spots && (contact[slot] = contact.GetValueOrDefault(slot) + 1) >= (drill?.Mode == "crossfire" ? DuelReact : ReactTicks))
             {
                 engaged[slot] = Server.TickCount; eng = true; Log("contact {n} at {f}", t.Name, (int)f);
+                if (ScriptedDrill) { Free(slot, c, t); continue; }   // css_scripted: it fights at once, by the plugin's hand
                 // Crossfire (14/10, his test: "il tire bizarrement" while walking): it has seen you, it stops and shoots
                 if (drill?.Mode == "crossfire" && !CfSpray) { Free(slot, c, t); continue; }
             }
             var here = pawn.AbsOrigin is { } ho ? new Vector3(ho.X, ho.Y, ho.Z) : pos;
-            if (phase == "live" && mePos != null && t.Team != cur.Team && !t.Runner && drill?.Mode != "crossfire" && Vector3.DistanceSquared(here, mePos.Value) < Near * Near)
+            // a defense's attacker only once on you (27/10, Vertigo B: freed 350 u from you hidden in your zone, the game walked
+            // it off and its wave was taken off unseen; its way now clears your zone, the user: "les adversaires ... ne se
+            // dirigent pas vers la zone")
+            var onYou = drill?.Mode == "defend" ? OnYou : Near;
+            if (phase == "live" && mePos != null && t.Team != cur.Team && !t.Runner && drill?.Mode != "crossfire" && Vector3.DistanceSquared(here, mePos.Value) < onYou * onYou)
             {   // you are right on it: a player would notice you, path or not
                 Free(slot, c, t); Log("close {n} at {f}", t.Name, (int)f); continue;
             }
@@ -903,28 +1493,99 @@ public partial class CoachReplay : BasePlugin
             var y0 = t.Path[i * 5 + 3]; var dy = ((t.Path[i * 5 + 8] - y0 + 540f) % 360f) - 180f;
             var pitch = t.Path[i * 5 + 4] + (t.Path[i * 5 + 9] - t.Path[i * 5 + 4]) * a;
             var face = new Vector3(0, y0 + dy * a, 0);
-            if (ft < 0f) { pawn.Teleport(p0, face, Vector3.Zero); continue; }   // not its time yet (a rush's runners wait at their start)
+            // css_scripted: where players look there, with what its team knows of you (Look.cs), not the real player's own
+            if (selftest && lookSmokes != null && ScriptedDrill && phase == "live" && !eng && t.Team != cur.Team && ft >= 0f)
+            {   // a self-test: its eyes since the plugin set them, and its legs
+                lookChk[0]++;
+                if (dbgLook == -2) dbgLook = slot;
+                if (slot == dbgLook && dbgLookN > 0 && pawn.EyeAngles is { } de0)
+                    Log("dbglook {t} tick start eyes {ex:F1} {ey:F1} lookNow {lx:F1} {ly:F1}", Server.TickCount, de0.X, de0.Y,
+                        lookNow.TryGetValue(slot, out var dl) ? dl.X : float.NaN, lookNow.TryGetValue(slot, out dl) ? dl.Y : float.NaN);
+                if (lookNow.TryGetValue(slot, out var ln0) && pawn.EyeAngles is { } e0)
+                {
+                    var fd = AngDiff(ln0, new Vector3(e0.X, e0.Y, 0f)).Length();
+                    if (fd > 2f) lookChk[1]++;
+                    if (fd > 10f) lookChk[2]++;
+                }
+                var wv = new Vector2(p1.X - p0.X, p1.Y - p0.Y).Length() * cur.Rate / cur.Step;
+                if (wv > 100f && pawn.AbsVelocity is { } lv && new Vector2(lv.X, lv.Y).Length() < 20f) lookChk[5]++;
+            }
+            if (lookSmokes != null && ScriptedDrill && phase == "live" && !eng && t.Team != cur.Team)
+            {
+                var look = LookFor(slot, t, pos, new Vector3(pitch, face.Y, 0), mePawn, lookSmokes);
+                SetEyes(pawn, look); face = new Vector3(0, look.Y, 0); pitch = look.X;   // its body upright, its eyes up or down (the look's pitch kept below, not the demo's)
+            }
+            if (ft < 0f)
+            {   // not its time yet (a rush's runners wait at their start): set there only when off it (29/10: no teleport in sight)
+                if (Vector3.DistanceSquared(here, p0) > 16f) { pawn.Teleport(p0, face, Vector3.Zero); botAt[slot] = p0; }
+                else { pawn.Teleport(null, face, Vector3.Zero); botAt[slot] = here; }
+                continue;
+            }
             // it walks: its speed takes it to where the path is at the next tick, and the game moves it (its legs move
             // like a player's; moved by teleports it slid, 04/10). Too far from its path (a closed door, a box it
             // jumped on in the match), or not live yet: put back on it
             var next = PathAt(t, ft + 1f / cur.Step) - here;
-            if (eng && (new Vector2(next.X, next.Y).Length() > 72f || Math.Abs(next.Z) > 56f)) { Free(slot, c, t); continue; }   // fighting, off its way: on its own
-            if (phase != "live" || new Vector2(next.X, next.Y).Length() > 72f || Math.Abs(next.Z) > 56f)
-                pawn.Teleport(pos, face, phase == "live" ? (p1 - p0) * (cur.Rate / (float)cur.Step) : Vector3.Zero);
-            else
-            {   // the path's own speed, plus a third of the gap beyond it each tick (all of a gap at once: 786 u/s jolts)
-                var pv = (p1 - p0) * (cur.Rate / (float)cur.Step);
-                var gap = next - pv / 64f;
-                var v = new Vector2(pv.X + gap.X * 22f, pv.Y + gap.Y * 22f);
-                // a player walking there (shift, under 135 u/s) was silent: so is the bot, catching up never makes it run
-                // (06/10: "des bruits de pas alors qu'il n'y a personne")
-                if (new Vector2(pv.X, pv.Y).Length() < 135f && v.Length() > 126f) v = Vector2.Normalize(v) * 126f;
-                pawn.Teleport(null, eng ? null : face, new Vector3(v.X, v.Y, pawn.AbsVelocity?.Z ?? 0f));   // fighting: its own aim
+            // its real speed, from where it was the tick before (17/10, the self-test: bots stuck in something kept the
+            // 1,215 u/s they were given and never moved, 2.5 s each: read from the game they ran, so their way's clock
+            // waited for them). Not moving for 12 ticks while its way runs on: put back on it at once
+            var realV = botAt.TryGetValue(slot, out var was) ? new Vector2(here.X - was.X, here.Y - was.Y).Length() * 64f : -1f;
+            var moved = realV >= 0f ? Vector3.Distance(here, was) * 64f : -1f;   // up and down too
+            botAt[slot] = here;
+            var wayV = new Vector2(p1.X - p0.X, p1.Y - p0.Y).Length() * cur.Rate / cur.Step;
+            // just put on its way's start (a wave's respawn) and not moving yet: the game holds a new spawn still for a few
+            // ticks (17/10, the self-test: put back 0.3 s after each wave's respawn), its way's clock waits for it
+            // 0.6 s of it at most (30/10, his review on Dust2's Long: a wave's second spawned in the doors, its clock held there
+            // 46 s, "frame 9 of 837", never came: "il est double porte, donc injouable"); then the unstick rules below
+            var spawnHold = !eng && phase == "live" && wayV > 60f && ft - t.SpawnF < 0.6f * cur.Rate / cur.Step && realV >= 0f && realV < 20f
+                            && Vector3.Distance(here, PathAt(t, t.SpawnF)) < 8f && spawnHeldN.GetValueOrDefault(slot) < 40;
+            if (spawnHold) { t.Start += 1f / cur.Step; spawnHeldN[slot] = spawnHeldN.GetValueOrDefault(slot) + 1; }
+            // caught in the floor (off the ground and not a hair of motion, not even falling; or it keeps the speed it is
+            // given): lifted 6 u out of it. Stopped by a wall it stands on the ground, and hops (below)
+            var frozenN = !spawnHold && !eng && phase == "live" && moved >= 0f && moved < 3f && wayV > 40f
+                          && ((pawn.Flags & (uint)PlayerFlags.FL_ONGROUND) == 0 || (pawn.AbsVelocity is { } fz && new Vector2(fz.X, fz.Y).Length() > 40f))
+                          ? botFrozen.GetValueOrDefault(slot) + 1 : 0;
+            botFrozen[slot] = frozenN;
+            if (frozenN == 6)
+            {   // a hop out of it (29/10: it was lifted 6 u, a teleport)
+                pawn.Teleport(null, null, new Vector3(pawn.AbsVelocity?.X ?? 0f, pawn.AbsVelocity?.Y ?? 0f, 160f));
+                if (selftest) St("hop", new() { ["bot"] = t.Sid, ["f"] = R1(ft), ["at"] = R3(here), ["kind"] = "unstick" });
             }
+            var stillN = !spawnHold && realV >= 0f && realV < Math.Max(20f, 0.5f * wayV) && wayV > 40f && !eng ? botStill.GetValueOrDefault(slot) + 1 : 0;
+            botStill[slot] = stillN;
+            if (stillN == 0 && realV > 0.8f * wayV) stepTries.Remove(slot);   // going again: its next step hop the low one
+            // stopped on the ground it hops a little (below); no headway in half a second while its way ran on: stuck
+            var stuck = false;
+            if (eng || !botProg.TryGetValue(slot, out var pg)) botProg[slot] = (Server.TickCount, here, ft);
+            else if (Server.TickCount - pg.T >= 32)
+            {
+                var wayRan = Vector3.Distance(PathAt(t, ft), PathAt(t, Math.Max(0f, pg.F)));   // a walk too (Inferno: 73 u/s)
+                stuck = wayRan > 32f && Vector3.Distance(here, pg.At) < Math.Min(32f, 0.3f * wayRan) && new Vector2(next.X, next.Y).Length() > 24f;
+                botProg[slot] = (Server.TickCount, here, ft);
+            }
+            if (realV < 0f) realV = pawn.AbsVelocity is { } av ? new Vector2(av.X, av.Y).Length() : 0f;
+            // in the air (falling to its way below, in its own jump, thrown up by a slope it ran up): no put-back up or down,
+            // it lands first (17/10, the self-test: drops and jumps put back at their peak)
+            var air = (pawn.Flags & (uint)PlayerFlags.FL_ONGROUND) == 0;
+            botGround[slot] = !air;
+            var zMax = air ? 160f : 56f;
+            if (eng && (new Vector2(next.X, next.Y).Length() > 72f || Math.Abs(next.Z) > zMax)) { Free(slot, c, t); continue; }   // fighting, off its way: on its own
+            if (phase != "live")
+            {   // before it starts: put on its way (its place for the drill)
+                pawn.Teleport(pos, face, Vector3.Zero);
+                botAt[slot] = pos;
+                botStill.Remove(slot);
+                botProg.Remove(slot);
+            }
+            else WalkWay(slot, c, t, pawn, here, ft, i, face, eng, stillN, realV, mePos);   // 29/10: by its speed alone, no put-back (Walk.cs)
             if (!eng && pawn.EyeAngles is { } eye && Math.Abs(eye.X - pitch) > 0.5f)
             { eye.X = pitch; Utilities.SetStateChanged(pawn, "CCSPlayerPawn", "m_angEyeAngles"); }
+            if (ScriptedDrill && !eng && pawn.EyeAngles is { } we1) wayEyes[slot] = new Vector3(we1.X, we1.Y, 0f);   // kept through its command (Combat.cs SimPost)
+            if (slot == dbgLook && dbgLookN > 0 && pawn.EyeAngles is { } de1)
+            { Log("dbglook {t} tick end eyes {ex:F1} {ey:F1} rot {r:F1}", Server.TickCount, de1.X, de1.Y, pawn.AbsRotation?.Y ?? float.NaN); if (--dbgLookN == 0) dbgLook = -1; }
         }
         if (phase != "live") return;
+        StSample(f);   // a self-test: each bot against its way, every half second
+        GuideTick();   // a guided self-test: the stuff thrown as its words say
         if (!bombDone && cur.Bomb != null && f >= cur.Bomb.F)   // the demo's plant: its planter alive here and still on its way
         {
             var pl = bots.FirstOrDefault(kv => kv.Value.Sid == cur.Bomb.By);
@@ -948,8 +1609,48 @@ public partial class CoachReplay : BasePlugin
         var defuse = bombLive && cur.Team == 3;
         var foes = bots.Where(b => b.Value.Team != cur.Team).ToList();
         if (mode == "actor" && foes.Count > 0 && foes.All(b => gone.Contains(b.Value.Sid)) && !defuse) { Finish("won"); return; }
+        // nobody coming to you never happens (30/10, the user: "Quand personne vient là où tu es, c'est ni censé être compté
+        // comme quelque chose de neutre, ni un fail, c'est censé ne jamais arriver en fait"): seen one of them yet; from a
+        // second before your death in the match, the ones still on their way come for you (Walk.cs Hunt: where their side
+        // last saw or heard you, else where you are, by the mesh); no end before one of them came into your sight (20 s more
+        // at most)
+        var hs = Humans().FirstOrDefault(x => x.PawnIsAlive);
+        if (!foeSeenOnce && hs != null && foes.Any(b => Utilities.GetPlayerFromSlot(b.Key)?.PlayerPawn.Value is { } bp
+                && bp.LifeState == (byte)LifeState_t.LIFE_ALIVE && (bp.EntitySpottedState.SpottedByMask[hs.Slot / 32] & (1u << (hs.Slot % 32))) != 0))
+            foeSeenOnce = true;
+        var meT = cur.Players.FirstOrDefault(p => p.Me);
+        var meDeath = meT != null && meT.Death > 0 ? meT.Death : maxFrames;
+        // no duel yet, whoever was glimpsed (31/10, round 15: a glimpse early on, by the game's spotting, kept the hunt off and
+        // ended the drill at its time with no fight: 5 of Train's situations, 4 of Overpass's, 4 of Nuke's "aucun kill")
+        // 02/11 17:20, the user: "fais en sorte que les bots viennent jouer des duels contre moi": no kill of yours yet, they come,
+        // a duel without a kill too (4 drills of round 16 fought and survived with no kill)
+        if (ScriptedDrill && mode == "actor" && !sitHunt && kills == 0 && f >= meDeath - 64 / cur.Step)
+        {
+            sitHunt = true;
+            foreach (var (sl, t) in foes)
+                if (!free.Contains(sl) && !gone.Contains(t.Sid) && Utilities.GetPlayerFromSlot(sl) is { IsValid: true, PawnIsAlive: true } fc)
+                {
+                    Free(sl, fc, t);
+                    if (fighters.TryGetValue(sl, out var fh)) fh.Since = now - 200;   // on the hunt at once
+                }
+            Log("situation: past your death in the match, no kill of yours yet: they come for you");
+        }
+        // the hunt as it goes, every 3 s: each hunter's distance to you, its speed, held or not (02/11, round 15, Mirage's R15:
+        // 29 s of hunt, none of them came, nothing said where they were)
+        if (sitHunt && sitExch < 0 && hs?.PlayerPawn.Value?.AbsOrigin is { } hso && now % 192 == 0)
+            Log("hunt: " + string.Join(", ", foes.Where(b => !gone.Contains(b.Value.Sid)).Select(b =>
+            {
+                var bp = Utilities.GetPlayerFromSlot(b.Key)?.PlayerPawn.Value;
+                if (bp?.AbsOrigin is not { } bo || bp.LifeState != (byte)LifeState_t.LIFE_ALIVE) return b.Value.Name + " down";
+                var held = huntProg.TryGetValue(b.Key, out var hp0) && now < hp0.HoldUntil ? " held" : "";
+                var v = bp.AbsVelocity is { } av ? new Vector2(av.X, av.Y).Length() : 0f;
+                return $"{b.Value.Name} {Vector3.Distance(new Vector3(bo.X, bo.Y, bo.Z), new Vector3(hso.X, hso.Y, hso.Z)):F0} u {v:F0} u/s{held}";
+            })));
         var endF = cur.Kind == "clutch" ? maxFrames + 64 * 10 / cur.Step : maxFrames + 64 * 2 / cur.Step;
-        if (f >= endF + (bombLive ? 45 * 64 / cur.Step : 0)) Finish(mode == "spec" ? "watched" : "survived");
+        // no end before a kill of yours (or your death), 30 s more at most (02/11 17:20, his rules: they come and duel you)
+        if (f >= endF + (bombLive ? 45 * 64 / cur.Step : 0)
+            && (mode != "actor" || kills >= 1 && (sitExch < 0 || Server.TickCount - sitExch > 3 * 64) || f >= endF + 30 * 64 / cur.Step))
+            Finish(mode == "spec" ? "watched" : "survived");
     }
 
     // a death of the demo, as it was heard and seen: its killer's shots (the sound of its gun, where it stands) and the kill
@@ -991,6 +1692,16 @@ public partial class CoachReplay : BasePlugin
         ["nova"] = "Weapon_Nova.Single", ["xm1014"] = "Weapon_XM1014.Single", ["mag7"] = "Weapon_Mag7.Single", ["sawedoff"] = "Weapon_Sawedoff.Single",
         ["m249"] = "Weapon_M249.Single", ["negev"] = "Weapon_Negev.Single",
     };
+
+    // the planted bomb as bots_live.json says it: where, the seconds left, being defused (and its seconds)
+    static Dictionary<string, object?>? BombLive()
+    {
+        var c4 = Utilities.FindAllEntitiesByDesignerName<CPlantedC4>("planted_c4").FirstOrDefault(x => x.IsValid && x.BombTicking && !x.HasExploded);
+        if (c4?.AbsOrigin is not { } o) return null;
+        return new Dictionary<string, object?> { ["pos"] = new[] { MathF.Round(o.X, 1), MathF.Round(o.Y, 1), MathF.Round(o.Z, 1) },
+            ["left"] = MathF.Round(c4.C4Blow - Server.CurrentTime, 1), ["defusing"] = c4.BeingDefused,
+            ["defuse_left"] = c4.BeingDefused ? MathF.Round(c4.DefuseCountDown - Server.CurrentTime, 1) : null };
+    }
 
     // the demo's bomb on the ground where it was planted, ticking with the time it had left: the game's own planted_c4,
     // made the way retake servers plant it, and the game told (HUD, bots)
@@ -1124,7 +1835,10 @@ public partial class CoachReplay : BasePlugin
         if (cur == null || phase != "live") return HookResult.Continue;
         var v = e.Userid;
         if (v != null && v.IsValid && bots.TryGetValue(v.Slot, out var t)) gone.Add(t.Sid);
-        Log("death {f}/{s}: {v} by {a} ({w})", (Server.TickCount - t0) / cur.Step, cur.Id, v?.PlayerName, e.Attacker?.PlayerName, e.Weapon);
+        // how far, and a headshot or not, for a duel's death (02/11: the MAG-7 posts' deaths, no distance to read them by)
+        var dd = v?.PlayerPawn.Value?.AbsOrigin is { } vo && e.Attacker?.PlayerPawn.Value?.AbsOrigin is { } ao && e.Attacker != v
+            ? $" {Vector3.Distance(new Vector3(vo.X, vo.Y, vo.Z), new Vector3(ao.X, ao.Y, ao.Z)):F0} u{(e.Headshot ? " HS" : "")}" : "";
+        Log("death {f}/{s}: {v} by {a} ({w}){d}", (Server.TickCount - t0) / cur.Step, cur.Id, v?.PlayerName, e.Attacker?.PlayerName, e.Weapon, dd);
         if (e.Attacker is { IsValid: true, IsBot: false } && v != null && v.IsBot) kills++;
         if (drill?.Kind == "aim" && !CfSpray && e.Attacker is { IsValid: true, IsBot: false } killer && v is { IsBot: true })   // a spray: one magazine for both
             AddTimer(0.05f, () => { if (killer.IsValid) FullMag(killer); });
@@ -1132,6 +1846,9 @@ public partial class CoachReplay : BasePlugin
         if (cur.Kind is "death" or "clutch" && v is { IsValid: true, IsBot: true } && bots.TryGetValue(v.Slot, out var tv) && tv.Team == cur.Team
             && v.PlayerPawn.Value?.AbsOrigin is { } dp)
             DrawX(new Vector3(dp.X, dp.Y, dp.Z));   // an ally down: where it fell, where the enemies are (06/10)
+        // Momentum: a fall, or a kill typed to start again, is that rep missed and you back on its start (MoTick). 16/10:
+        // it ended the whole drill ("dead"), every jump and stop drill of his Mirage and Fachwerk sessions after one try
+        if (MoOn && v is { IsValid: true, IsBot: false }) return HookResult.Continue;
         if (SessionDeath(e, v)) return HookResult.Continue;   // a defense: you come back
         if (mode == "actor" && v is { IsValid: true, IsBot: false })
         {
@@ -1149,10 +1866,21 @@ public partial class CoachReplay : BasePlugin
 
     HookResult OnHurt(EventPlayerHurt e, GameEventInfo i)
     {
+        if (phase == "live" && e.Attacker is { IsValid: true, IsBot: true } && e.Userid is { IsValid: true, IsBot: false })
+            sitExch = Server.TickCount;   // one of them hurt you: a duel (a situation's end waits for one)
         if (phase == "live" && e.Attacker is { IsValid: true, IsBot: false } && e.Userid is { IsBot: true } v)
         {
             dmg += e.DmgHealth;
-            if (bots.TryGetValue(v.Slot, out var hit) && !hit.Hold && !hit.Strafe) Free(v.Slot, v, hit);   // hit: it reacts like a player (a target stays)
+            sitExch = Server.TickCount;
+            // hit: it reacts like a player (a target stays; a situation's or a defense's holder too, 30/10, the user: "ils ne
+            // réagissent pas quand je leur tire dessus")
+            if (bots.TryGetValue(v.Slot, out var hit) && (!hit.Hold || ScriptedDrill) && !hit.Strafe) Free(v.Slot, v, hit);
+            // a fighter of the plugin's hand turns to the one who hit it, and holds there if it cannot see him (a smoke)
+            if (fighters.TryGetValue(v.Slot, out var fh) && e.Attacker.PlayerPawn.Value?.AbsOrigin is { } ao)
+            {
+                fh.HurtBy = e.Attacker.Slot; fh.HurtAt = Server.TickCount;
+                fh.Last = new Vector3(ao.X, ao.Y, ao.Z + 62f); fh.HasLast = true; fh.LastSeen = Server.TickCount;
+            }
         }
         return HookResult.Continue;
     }
@@ -1186,6 +1914,9 @@ public partial class CoachReplay : BasePlugin
             var ac = new CCSPlayerPawn(att.Handle).OriginalController.Value;
             // a bot on its recorded path dies only as recorded (a demo death is the bot on itself); one playing on its own
             // (it saw you) can be shot by anyone: your teammates can trade you
+            // an exec's entry: its teammate's grenades hurt them (20/10, his video: "lui il est censé brûler de la molotov,
+            // j'aimerais bien qu'il meure pour de vrai de la molotov": never one burned, bots never hurt bots)
+            if (EntryOn && ac is { IsBot: true } && bots.TryGetValue(ac.Slot, out var mt) && mt.Sid == "mate") return HookResult.Continue;
             if (vc is { IsBot: true } && ac is { IsBot: true } && vc.Slot != ac.Slot && !free.Contains(vc.Slot)) return HookResult.Handled;
             if (drill?.Mode == "prefire" && vc is { IsBot: false } && ac is { IsBot: true }) return HookResult.Handled;   // prefire: they don't shoot
             // 09/10, his defense video: "je me prends des balles à travers les portes alors que l'ennemi ne m'a jamais vu": a
@@ -1212,6 +1943,8 @@ public partial class CoachReplay : BasePlugin
         if (cur == null || phase != "live") return;
         phase = "done";
         var alive = (Server.TickCount - t0) / 64.0;
+        Log("footsteps: bots {b} (+{o} played by the plugin), you {y} in {s:F0} s", stepsBots, stepsOurs, stepsYou, alive);
+        stepsBots = stepsYou = stepsOurs = 0;
         if (sess != null && drill != null) { SessionFinish(outcome, alive); return; }
         ClearLine();
         if (mode == "actor") outcome = SitOutcome(outcome);
@@ -1235,6 +1968,9 @@ public partial class CoachReplay : BasePlugin
     {
         "won" or "survived" => kills >= 1 ? o : "passive",
         "dead" => kills >= 1 ? "kill" : "dead",
+        // a death's situation is won by its goal said on screen, "un kill, ou se faire trader": the bomb's end after a kill
+        // of yours is no fail (31/10, round 13, Anubis: 3 kills, "bombe explosée", failed); a clutch's is its round's
+        "exploded" or "defused" when cur?.Kind == "death" && !BombWon(o) && kills >= 1 => "kill",
         _ => o,   // the bomb decides: defused or exploded
     };
 
@@ -1290,11 +2026,47 @@ public partial class CoachReplay : BasePlugin
 
     bool Io(Action a) { try { return !io.IsAddingCompleted && io.TryAdd(a); } catch (InvalidOperationException) { return false; } }
     void OnGame(Action a) => toGame.Enqueue(a);
-    void Log(string msg, params object?[] args) { if (!Io(() => Logger.LogInformation(msg, args))) Logger.LogInformation(msg, args); }
+    void Log(string msg, params object?[] args) { StLog(msg, args); if (!Io(() => Logger.LogInformation(msg, args))) Logger.LogInformation(msg, args); }
     void Append(string file, string line) => Io(() => File.AppendAllText(System.IO.Path.Combine(Dir, file), line + "\n"));
+
+    // a player back from a drop off his team (28/10 00:22, Train's defense: kicked by an overflow as a drill began, back in
+    // 5 s as a spectator; its attackers walked a site nobody held, 0 kills, the next drill never live, the session lost)
+    int teamFixAt = -100000, noPawnSince = -1;
+    void TeamFix()
+    {
+        if (sess == null || drill == null || cur == null || mode == "spec" || Server.TickCount - teamFixAt < 640) { noPawnSince = -1; return; }   // 01:02: a Momentum's too
+        // or back on its team but with no living body where nobody dies (01:16, Mirage's exec A: back from the kick in 2 s,
+        // its walk 30 s on 0, 0, -64; a quick reconnect fires no "connect full", the drill never run again)
+        // a defense too, alive for the game but at the map's origin (03/11, round 21, Dust2's B with the AWP: after its
+        // retry's round restart the player read 0, 0, 0 the whole drill, 207 s, its waves walked a site nobody held; the
+        // dead-player respawn never fired, the pawn "alive")
+        bool AtOrigin(CCSPlayerController h) => h.PawnIsAlive && h.PlayerPawn.Value?.AbsOrigin is { } o && MathF.Abs(o.X) < 1f && MathF.Abs(o.Y) < 1f;
+        var noBody = phase == "live" && (cur.Kind is "nade" or "momentum" && Humans().Any(h => !h.PawnIsAlive)
+                                         || drill.Mode == "defend" && Humans().Any(AtOrigin));
+        noPawnSince = noBody ? (noPawnSince < 0 ? Server.TickCount : noPawnSince) : -1;
+        var offTeam = Humans().Any(h => h.Team is CsTeam.None or CsTeam.Spectator);
+        if (!offTeam && !(noBody && Server.TickCount - noPawnSince > 3 * 64)) return;
+        noPawnSince = -1;
+        teamFixAt = Server.TickCount;
+        Log("a player off his team in a drill: on its team, the drill again");
+        Teams();
+        var g = sessGen;
+        AddTimer(1.5f, () => { if (g == sessGen && sess != null && drill != null) RunDrill(drill); });
+    }
+
+    // a player left in noclip outside the sandbox walks again (28/10: an Alt-Tab, his noclip key, in a drill)
+    void NoclipFix()
+    {
+        if (sandbox) return;
+        foreach (var h in Humans())
+            if (h.PawnIsAlive && h.PlayerPawn.Value is { } pw && pw.MoveType == MoveType_t.MOVETYPE_NOCLIP)
+            { Freeze(pw, false); Log("noclip off: {n} not in the sandbox", h.PlayerName); }
+    }
 
     void Beat()
     {
+        try { TeamFix(); } catch (Exception) { }
+        try { NoclipFix(); } catch (Exception) { }
         try
         {
             var o = new Dictionary<string, object?> { ["t"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), ["humans"] = Humans().Count(),

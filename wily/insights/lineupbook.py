@@ -82,7 +82,7 @@ def fetch(mp, force=False):
         return json.load(open(f, encoding="utf-8"))
     try:
         url = f"https://raw.githubusercontent.com/{book['repo']}/{book['branch']}/{book['file']}"
-        text = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "cs2-coach"}), timeout=20).read().decode("utf-8")
+        text = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "wily-coach"}), timeout=20).read().decode("utf-8")
         res = {"map": mp, "author": book["author"], "repo": f"https://github.com/{book['repo']}", "time": time.strftime("%Y-%m-%d"),
                "lineups": parse(text, book)}
         json.dump(res, open(f, "w", encoding="utf-8"), ensure_ascii=False, indent=1)

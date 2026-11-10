@@ -11,7 +11,7 @@ writes when a key is pressed, so the first key of the pair says nothing (Wily he
 CS2 runs a config file each time a key bound to `exec` is pressed, and reads it from the disk again: the app rewrites
 small files in CS2's cfg folder (coach_path1.cfg to coach_path3.cfg for the ways, kept from the time they said three
 paths, coach_rush.cfg, coach_slow.cfg, coach_ctrl.cfg) whenever the page's plan changes, and the keys run them. Nothing is sent by the app itself: you press the key. One time only, in CS2's
-console: `exec coach_binds` (the binds then stay in your CS2 settings).
+console: `exec wily_bind` (the binds then stay in your CS2 settings; `exec coach_binds`, its name until 20/10, still runs it).
 
 The text written is cleaned (no quote, semicolon or line break, plain characters, 120 at most): a file can only ever
 say one line in the team chat (10/10: no more chat wheel "Go A" after it, two lines a key was spam), and define CS2
@@ -34,11 +34,12 @@ TEMPO_STATE = {"rush": "rush", "slow": "slow", "ctrl": "control"}
 FOCUS_OFF = "KP_MINUS"   # numpad minus: drop the focus on a path
 EXTRA = {"eco": "KP_DEL", "sit": "KP_0"}   # numpad ".": the economy plan; numpad 0: the situation, recent and global
 SITE_KEYS = {"A": "KP_7", "B": "KP_9"}   # numpad 7 / 9: A / B (CT: the site you play; once planted, both sides: the bomb's site)
-TEAM_KEY = "KP_SLASH"
-LINEUP_KEY = "KP_PLUS"   # numpad +: the next lineup's photo, in a photo session on the training server (lineshots.py, 06/10)   # numpad /: your team agreed to be recorded (what you hear, for this match: 04/10)
-OLD_KEYS = {"KP_MULTIPLY": "exec coach_team"}   # numpad *, the team key of 04/10 21:40: already used for something else
-                                                # of yours; unbound by exec coach_binds while it still runs the coach's file
-BINDS = "coach_binds.cfg"
+TEAM_KEY = "KP_SLASH"   # numpad /: your team agreed to be recorded (what you hear, for this match: 04/10)
+# keys the coach no longer uses, unbound by exec wily_bind while they still run the coach's file: numpad *, the team
+# key of 04/10 21:40 (already used for something else of yours); numpad +, the lineup photo session's (06/10, gone 16/10)
+OLD_KEYS = {"KP_MULTIPLY": "exec coach_team", "KP_PLUS": "exec coach_lineup"}
+BINDS = "wily_bind.cfg"   # 20/10, the user: "change exec coach_binds en exec wily_bind"
+OLD_BINDS = "coach_binds.cfg"   # its name before: only runs it (a launch option pasted before 20/10, "+exec coach_binds")
 _LAST = {}
 SAY_DIR = {"A": "A", "MID": "mid", "B": "B"}
 SAY_TEMPO = {"rush": "Rush", "slow": "Slow", "control": "Map control"}
@@ -162,7 +163,10 @@ def binds_text():
     lines += [f'bind "{k}" "exec coach_{name}"' for name, k in EXTRA.items()]
     lines += [f'bind "{k}" "exec coach_site{site}"' for site, k in SITE_KEYS.items()]
     lines += [f'bind "{TEAM_KEY}" "exec coach_team"']
-    lines += [f'bind "{LINEUP_KEY}" "exec coach_lineup"']
+    # F5 rethrows your last grenade (20/10, the user: "il faudrait que la touche F5 fasse re-throw le dernier stuff envoyé
+    # en mode sandbox"): the game's own command where you host the game (your offline practice), the training server's
+    # where you join it (it refuses the game's from a player: "not marked FCVAR_CLIENT_CAN_EXECUTE")
+    lines += ['bind "F5" "sv_rethrow_last_grenade; css_rt"']
     lines += ['echo "Wily: numpad 1-2-3 = A / mid / B, 4-5-6 = rush / slow / map control, minus drops them, / your team agreed to be recorded"']
     return "\n".join(lines) + "\n"
 
@@ -175,9 +179,7 @@ def write(paths, extra=None, tempo=None):
     d = gsi.cfg_dir()
     if not d:
         return False
-    bf = os.path.join(d, BINDS)
-    if not os.path.exists(bf) or open(bf, encoding="utf-8").read() != binds_text():
-        open(bf, "w", encoding="utf-8").write(binds_text())
+    _binds_file(d)
     ff = os.path.join(d, "coach_focus0.cfg")
     if not os.path.exists(ff):
         open(ff, "w", encoding="utf-8").write('echo "Coach CS2: focus off"\n')
@@ -244,9 +246,6 @@ def _site_files(d):
     tf = os.path.join(d, "coach_team.cfg")   # numpad /: only a line in the console, the app reads it
     if not os.path.exists(tf):
         open(tf, "w", encoding="utf-8").write('echo "Coach CS2: team agreed"\n')
-    lf = os.path.join(d, "coach_lineup.cfg")   # numpad +: rewritten during a photo session (lineshots.py)
-    if not os.path.exists(lf):
-        open(lf, "w", encoding="utf-8").write('echo "Wily: no lineup photo session (Prepare: Photos of the lineups)"\n')
     for site in SITE_KEYS:   # only a line in the console: the app reads it (CT: your site; planted: the bomb's site)
         sf = os.path.join(d, f"coach_site{site}.cfg")
         if not os.path.exists(sf):
@@ -263,7 +262,7 @@ def bound():
 
 
 def bound_site():
-    """True when numpad 7 runs coach_siteA in your CS2 key settings (exec coach_binds once more after this update)."""
+    """True when numpad 7 runs coach_siteA in your CS2 key settings (exec wily_bind once more after this update)."""
     try:
         f = _keys_file()
         return "exec coach_siteA" in open(f, encoding="utf-8", errors="replace").read()
@@ -272,9 +271,17 @@ def bound_site():
 
 
 def bound_tempo():
-    """True when numpad 4 runs coach_rush (exec coach_binds once more after the 06/10 update)."""
+    """True when numpad 4 runs coach_rush (exec wily_bind once more after the 06/10 update)."""
     try:
         return "exec coach_rush" in open(_keys_file(), encoding="utf-8", errors="replace").read()
+    except Exception:
+        return False
+
+
+def bound_rt():
+    """True when F5 runs the training server's rethrow (exec wily_bind once more after the 20/10 update)."""
+    try:
+        return "css_rt" in open(_keys_file(), encoding="utf-8", errors="replace").read()
     except Exception:
         return False
 
@@ -292,7 +299,7 @@ def console_file():
     return os.path.join(os.path.dirname(d), "console.log") if d else None
 
 
-KEY_RE = re.compile(r"execing coach_(?:path([123])|focus0|site([AB])|(team)|(rush|slow|ctrl)|(lineup))\b")
+KEY_RE = re.compile(r"execing coach_(?:path([123])|focus0|site([AB])|(team)|(rush|slow|ctrl))\b")
 
 
 def watch():
@@ -324,12 +331,6 @@ def watch():
                             print("team sound:", e, flush=True)
                     elif m and m.group(2):
                         gsi.set_site_key(m.group(2))
-                    elif m and m.group(5):   # numpad +: a lineup's photo (a photo session on the training server)
-                        try:
-                            from wily.insights import lineshots
-                            lineshots.on_key()
-                        except Exception as e:
-                            print("lineup photo:", e, flush=True)
                     elif m and m.group(4):   # numpad 4-5-6: the tempo (pressed again: said again, it stays; minus drops it)
                         gsi.set_tdir(TEMPO_STATE[m.group(4)], toggle=False)
                     elif m and m.group(1):   # numpad 1-2-3: the way (A, mid, B); hostage maps keep their routes 1-2-3
@@ -346,14 +347,21 @@ def watch():
         time.sleep(0.1)
 
 
+def _binds_file(d):
+    """wily_bind.cfg up to date, and coach_binds.cfg, its old name, running it."""
+    for f, text in ((BINDS, binds_text()), (OLD_BINDS, "exec wily_bind\n")):
+        p = os.path.join(d, f)
+        if not os.path.exists(p) or open(p, encoding="utf-8").read() != text:
+            open(p, "w", encoding="utf-8").write(text)
+
+
 def status():
     d = gsi.cfg_dir()
-    if d and (not os.path.exists(os.path.join(d, BINDS)) or open(os.path.join(d, BINDS), encoding="utf-8").read() != binds_text()):
-        open(os.path.join(d, BINDS), "w", encoding="utf-8").write(binds_text())
     if d:
+        _binds_file(d)
         _site_files(d)
     cf = console_file()
     fresh = bool(cf and os.path.exists(cf) and time.time() - os.path.getmtime(cf) < 2 * 86400)
     return {"cfg": bool(d), "binds_file": bool(d and os.path.exists(os.path.join(d, BINDS))), "bound": bound(), "focus_bound": bound_focus(),
-            "site_bound": bound_site(), "tempo_bound": bound_tempo(),
+            "site_bound": bound_site(), "tempo_bound": bound_tempo(), "rt_bound": bound_rt(),
             "console": fresh}

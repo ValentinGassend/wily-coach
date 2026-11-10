@@ -34,7 +34,10 @@ DEMOS = 200   # demos read per map (13/10: 30 gave Mirage 7 spots)
 # peekent, à des timings différents")
 # 3 (14/10, his second test): a peek starts out of sight half a second at least ("il spawn déjà sur moi"); the spray's
 # two come onto one angle from both sides ("un qui peek à gauche, un qui peek à droite, sur le même angle")
-V = 3
+# 4 (14/10, his third test): a spot is a place whatever the angle ("des gens qui viennent de l'appartement aussi, de
+# banane aussi": the enemy glows where it comes from); the spray at short and mid range ("de Pit jusqu'à Library
+# c'est trop long")
+V = 4
 
 
 def load(mp, build=True):
@@ -43,7 +46,7 @@ def load(mp, build=True):
     cf = os.path.join(CF_D, f"{mp}.json")
     try:
         c = json.load(open(cf, encoding="utf-8"))
-        if c.get("v") == V:
+        if c.get("v") in (3, V):   # v3: the same format (its spots one angle each): kept until rebuilt
             return c
     except (OSError, ValueError):
         pass
@@ -70,7 +73,7 @@ def _build(mp, demos=DEMOS):
     for d in sorted(os.listdir(config.DEEP), reverse=True):
         try:
             if json.load(open(os.path.join(config.DEEP, d, "meta.json"), encoding="utf-8")).get("map") == mp \
-                    and os.path.exists(os.path.join(config.CACHE, f"{d}.dem")):
+                    and config.has_demo(d):
                 dirs.append(d)
         except (OSError, ValueError):
             continue
@@ -88,7 +91,7 @@ def _build(mp, demos=DEMOS):
             if not len(D):
                 continue
             want = sorted({t for k in D.tick for t in range(int(k) - WIN, int(k) + 1, STEP)})
-            dp = DemoParser(os.path.join(config.CACHE, f"{d}.dem"))
+            dp = DemoParser(config.demo(d))
             T = dp.parse_ticks(["X", "Y", "Z", "yaw", "pitch", "is_alive", "last_place_name", "spotted", "is_airborne"], ticks=want)
             T["steamid"] = T.steamid.astype(str)
         except Exception as e:
@@ -148,14 +151,13 @@ def _build(mp, demos=DEMOS):
                          "hzone": nades.humanize(hl, mp) if hl else None, "pzone": nades.humanize(pl, mp) if pl else None,
                          "path": path, "end": [float(v) for v in W[-1]], "won": r.holder == "killer", "w": r.weapon})
     out = {"v": V, "spots": []}
-    # one spot: a side, a place 80 u around, one angle (the crosshair's yaw within 25 degrees): the peeks of a spot
-    # come out where its angle looks
+    # one spot: a side, a place 80 u around (v4: every way into it), the crosshair on the angle most of its peeks
+    # come out at
     groups = []
     for x in sorted(rows, key=lambda x: random.random()):
         for g in groups:
             c = g[0]
-            if c["side"] == x["side"] and math.dist(c["hpos"][:2], x["hpos"][:2]) < 80 and abs(c["hpos"][2] - x["hpos"][2]) < 64 \
-                    and abs((c["hang"][1] - x["hang"][1] + 180) % 360 - 180) < 25:
+            if c["side"] == x["side"] and math.dist(c["hpos"][:2], x["hpos"][:2]) < 80 and abs(c["hpos"][2] - x["hpos"][2]) < 64:
                 g.append(x)
                 break
         else:
@@ -186,7 +188,7 @@ def _build(mp, demos=DEMOS):
                 da, db = math.dist(me[:2], a_[:2]), math.dist(me[:2], b_[:2])
                 diff = abs(((_bearing(me, a_) - _bearing(me, b_)) + 180) % 360 - 180)
                 li, lj = g[i]["lat"], g[j]["lat"]
-                if 300 < min(da, db) and max(da, db) < 2200 and diff <= 12 and 30 < math.dist(a_[:2], b_[:2]) < 700 \
+                if 300 < min(da, db) and max(da, db) < 1300 and diff <= 12 and 30 < math.dist(a_[:2], b_[:2]) < 700 \
                         and abs(a_[2] - b_[2]) < 120 and min(abs(li), abs(lj)) >= 20 and li * lj < 0 \
                         and all(math.dist(a_, E[p]) > 40 or math.dist(b_, E[q]) > 40 for p, q in took):
                     took.append((i, j))
@@ -199,6 +201,18 @@ def _build(mp, demos=DEMOS):
         out["spots"] += sorted([c for c in cand if c["side"] == side], key=lambda c: -c["n"])[:14]
     json.dump(out, open(cf, "w", encoding="utf-8"), separators=(",", ":"))
     return out
+
+
+SPRAY_MAX = 600   # 27/10, his order "limiter la distance de l'exercice de spray": the real-client battery's sprays passed
+# up to ~650 u and failed from 750 u on (Overpass's Water 900, Ancient's Alley 800-1180, Vertigo's Elevator 1000); 16:30,
+# round 4 with the driver's aim fixed: 350 u 5/5, 500-615 u 4/5 or 2/5 (Dust2's A site 525-643 u: 4-8 hits of 21-30), a
+# spray's control no longer the point past 600 u
+
+
+def _near_pairs(sp):
+    """The spot's spray pairs at short and mid range (SPRAY_MAX at most; 14/10 already: "de Pit jusqu'à Library c'est
+    trop long"), the farther ones left out."""
+    return [pr for pr in sp.get("pairs") or [] if all(math.dist(sp["pos"][:2], q["end"][:2]) < SPRAY_MAX for q in pr)]
 
 
 def level_of(sid):
@@ -222,6 +236,40 @@ def _id(mp, side, sp, v):
     return f"crossfire:{mp}:{side}:{sp['zone']}:{round(sp['pos'][0])}:{round(sp['pos'][1])}:{v}"
 
 
+def _kind(path):
+    """A real peek's kind (23/10, the user: "peeks des bots avec les mouvements de la base (jiggle, wide swing)"): a wide
+    swing when it ran into your sight, 180 u/s and more from 0.75 to 0.25 s before the kill (its frames 2 ticks apart; a
+    quarter of Mirage's peeks), else a plain peek."""
+    n = len(path) // 5
+    if n < 30:
+        return ""
+    a, b = path[(n - 24) * 5:(n - 24) * 5 + 2], path[(n - 8) * 5:(n - 8) * 5 + 2]
+    return "swing" if math.dist(a, b) * 2 >= 180 else ""
+
+
+AWP_SHARE, AWP_LINE = 0.25, 1100.0   # a spot played with an AWP: a quarter of its kills, its peeks that far
+
+
+def _line(sp):
+    """How far its peeks come out from the spot, their median (u)."""
+    ds = sorted(math.dist(sp["pos"][:2], p["path"][-5:-3]) for p in sp.get("peeks") or [] if len(p.get("path") or []) >= 5)
+    return ds[len(ds) // 2] if ds else 0.0
+
+
+def _hidden(mp, sp):
+    """A spot's peeks whose start the holder does not see (23/10 eve, the user on Mirage's Window: "ils ne sont pas cachés
+    à la base. Ils sont derrière absolument rien"; the base's Ts were unseen there behind the round's smokes): the ones
+    tools/crossfire_check.py traced hidden, all of them while it has not traced that spot."""
+    book = config.read_json(os.path.join(config.HERE, "resources", "crossfire_checked.json"), {}) or {}
+    rec = book.get(f"{mp}|{round(sp['pos'][0])}|{round(sp['pos'][1])}|{round(sp['pos'][2])}")
+    peeks = sp.get("peeks") or []
+    if not rec or len(rec.get("seen") or []) != len(peeks):
+        return peeks
+    # and seen once on its way (27/10, Nuke's Squeaky: peeks ending at Mini, never in sight, "6 sans duel")
+    reach = rec.get("reach") if len(rec.get("reach") or []) == len(peeks) else [True] * len(peeks)
+    return [p for p, seen, r in zip(peeks, rec["seen"], reach) if not seen and r]
+
+
 def drills(sid, mp, secs, guns, rifle, items=None, nsess=0):
     """The Crossfire block: as many drills as its time holds, in the order of the player's level, on different spots,
     both sides in turn: the ones missed and due first (the training's boxes: items, nsess), then the ones never
@@ -243,9 +291,11 @@ def drills(sid, mp, secs, guns, rifle, items=None, nsess=0):
         k += 1
         cands = by_side[side]
         if v == "spray":
-            cands = [x for x in cands if x["pairs"]]
-        elif v == "peek":
-            cands = [x for x in cands if x["peeks"]]
+            cands = [x for x in cands if _near_pairs(x)]
+        elif v == "peek":   # you come from where its holder does not see you (tools/crossfire_check.py)
+            cands = [x for x in cands if _hidden(mp, x)]
+        else:   # a hold: 3 real peeks at least whose start you do not see from the spot (tools/crossfire_check.py)
+            cands = [x for x in cands if len(_hidden(mp, x)) >= 3]
         if not cands:
             continue
         items = items or {}
@@ -270,16 +320,39 @@ def drills(sid, mp, secs, guns, rifle, items=None, nsess=0):
         d = {"id": _id(mp, side, sp, v), "kind": "aim", "mode": "crossfire",
              "variant": v, "map": mp, "team": team, "title": title, "tip": tip, "seconds": SECS[v], "count": REPS[v],
              "weapons": ["weapon_knife", pistol, gun], "bot_weapons": ["weapon_knife", foe], "armor": 100, "helmet": True}
+        # the guns the spot is played with (23/10, the user: "varier les armes selon le spot (AWP sur les longues lignes,
+        # pistolets en début de match)"): the block's first duel a pistol round's (no helmet); a spot its holders hold with
+        # an AWP a quarter of the time, on a long line, held with one (yours on a hold, the bot's on a peek)
+        if v != "spray":
+            if not out:
+                d.update(id=d["id"] + ":pistol", title=f"{title} · {i18n.tr('PISTOLS')}", helmet=False,
+                         weapons=["weapon_knife", pistol], bot_weapons=["weapon_knife", "weapon_usp_silencer" if team == 2 else "weapon_glock"])
+            else:
+                try:
+                    from wily.training import train
+                    share, n_k = train.awp_share(mp, sp["pos"], sp["side"])
+                except Exception as e:
+                    print("crossfire awp", mp, e, flush=True)
+                    share, n_k = 0.0, 0
+                if n_k >= 8 and share >= AWP_SHARE and _line(sp) >= AWP_LINE:
+                    d.update(id=d["id"] + ":awp", title=f"{title} · AWP")
+                    if v == "hold":
+                        d["weapons"] = ["weapon_knife", pistol, "weapon_awp"]
+                    else:
+                        d["bot_weapons"] = ["weapon_knife", "weapon_awp"]
         if v == "hold":
-            d.update(me={"pos": sp["pos"], "ang": sp["ang"]}, tracks=[{"zone": p["zone"], "path": p["path"]} for p in sp["peeks"]])
+            d.update(me={"pos": sp["pos"], "ang": sp["ang"]}, tracks=[{"zone": p["zone"], "path": p["path"], "kind": _kind(p["path"])} for p in _hidden(mp, sp)])
         elif v == "peek":
-            d.update(me={"pos": sp["peeks"][0]["path"][:3], "ang": [0, sp["peeks"][0]["path"][3]]},
+            hid = _hidden(mp, sp)
+            # each real peek whole, not its start only (24/10, the real-client test of Nuke's Squeaky: the doors on its way
+            # stayed shut, the plugin opens those its frames pass through, and nothing showed the way the peek went)
+            d.update(me={"pos": hid[0]["path"][:3], "ang": [0, hid[0]["path"][3]]},
                      bots=[{"pos": sp["pos"], "ang": sp["ang"], "zone": sp["zone"]}],
-                     tracks=[{"zone": p["zone"], "path": p["path"][:5]} for p in sp["peeks"]])
+                     tracks=[{"zone": p["zone"], "path": p["path"]} for p in hid])
         else:   # the pairs' two enemies and their real peeks, in the same order
             d.update(me={"pos": sp["pos"], "ang": sp["ang"]},
-                     bots=[{"pos": q["end"], "ang": [0, _bearing(q["end"], sp["pos"])], "zone": zone} for pair in sp["pairs"] for q in pair],
-                     tracks=[{"zone": zone, "path": q["path"]} for pair in sp["pairs"] for q in pair])
+                     bots=[{"pos": q["end"], "ang": [0, _bearing(q["end"], sp["pos"])], "zone": zone} for pair in _near_pairs(sp) for q in pair],
+                     tracks=[{"zone": zone, "path": q["path"]} for pair in _near_pairs(sp) for q in pair])
         out.append(d)
         total += SECS[v]
     # 14/10, the user: "mets tout le travail de spray ensemble, tout le travail de peek ensemble, tout le hold the angle

@@ -252,7 +252,7 @@ def step(st, reg):
         m = pipeline.registry().get(mid)
         if not m:
             return "valve"
-    dem = os.path.join(config.CACHE, f"{mid}.dem")
+    dem = config.demo(mid)
     if not os.path.exists(dem):
         try:
             pipeline._fetch_demo(mid, m["url"], gone_tries=2)

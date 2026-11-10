@@ -49,7 +49,7 @@ def verify(params, return_to):
     if not m:
         return None
     data = dict(params, **{"openid.mode": "check_authentication"})
-    req = urllib.request.Request(OPENID, data=urllib.parse.urlencode(data).encode(), headers={"User-Agent": "cs2-coach"})
+    req = urllib.request.Request(OPENID, data=urllib.parse.urlencode(data).encode(), headers={"User-Agent": "wily-coach"})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             body = r.read().decode("utf-8", "replace")
@@ -101,7 +101,7 @@ class SteamError(Exception):
 
 def _api(path, **params):
     url = f"{API}/{path}?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"User-Agent": "cs2-coach"})
+    req = urllib.request.Request(url, headers={"User-Agent": "wily-coach"})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return r.status, json.loads(r.read() or b"{}")

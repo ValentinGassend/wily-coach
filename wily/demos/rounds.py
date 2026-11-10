@@ -11,7 +11,6 @@ import sys
 
 import numpy as np
 import pandas as pd
-from demoparser2 import DemoParser
 
 TICKRATE = 64
 SIDE = {2: "T", 3: "CT"}
@@ -43,8 +42,16 @@ def buy_type(value, n, pistol_round):
     return "eco" if per < 1500 else "force" if per < 3700 else "full"
 
 
+# the events extract() reads, in one pass of the demo (onepass.py, 15/10)
+EVENTS = {"round_freeze_end": ((), ()), "round_officially_ended": ((), ()), "round_end": ((), ()),
+          "bomb_planted": (("X", "Y", "last_place_name"), ()), "bomb_defused": ((), ()), "bomb_exploded": ((), ()),
+          "player_hurt": (("team_num",), ()), "player_death": (("team_num", "active_weapon_name", "last_place_name"), ()),
+          "player_footstep": ((), ())}
+
+
 def extract(path, out):
-    p = DemoParser(path)
+    from wily.demos import onepass
+    p = onepass.Parser(path, EVENTS)
     freeze = p.parse_event("round_freeze_end")["tick"].tolist()
     ends = sorted(set(p.parse_event("round_officially_ended")["tick"].tolist()))
     rounds = []
@@ -207,6 +214,8 @@ def extract(path, out):
     else:
         pd.DataFrame(columns=["tick", "round", "t", "steamid", "side", "place", "enemy_dist", "mate_dist", "enemies_alive", "mates_alive"]).to_parquet(
             os.path.join(out, "steps.parquet"))
+    from wily.core import ledger
+    ledger.touch(out)   # its files replaced in place: the steps after it see it (ledger.py)
     return len(R), len(L)
 
 
@@ -235,14 +244,26 @@ def _one(args):
 
 
 def run_all(cache, deep_dir, workers=3, log=print):
-    """Every cached demo whose deep extraction exists but has no round context yet."""
+    """Every cached demo whose deep extraction exists but has no round context yet (the ones found complete before
+    are not opened again: ledger.py, 15/10)."""
     from concurrent.futures import ProcessPoolExecutor
+    from wily.core import ledger
+    led = ledger.Ledger(f"rounds_{os.path.basename(deep_dir)}", version="buy_util")
+    dirs = ledger.folders(deep_dir)
     todo = []
     for f in os.listdir(cache):
         if f.endswith(".dem"):
-            out = os.path.join(deep_dir, f[:-4])
-            if os.path.exists(os.path.join(out, "meta.json")) and not done(out):
+            mid = f[:-4]
+            if mid not in dirs or led.settled(mid, dirs[mid]):
+                continue
+            out = os.path.join(deep_dir, mid)
+            if not os.path.exists(os.path.join(out, "meta.json")):
+                continue
+            if done(out):
+                led.mark(mid, dirs[mid])
+            else:
                 todo.append((os.path.join(cache, f), out))
+    led.save()
     if not todo:
         return 0
     log(f"Round context: {len(todo)} demo(s)…")

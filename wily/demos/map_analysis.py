@@ -11,7 +11,6 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
-from demoparser2 import DemoParser
 
 from wily.core import mapdata
 
@@ -104,8 +103,14 @@ class ZoneMap:
         return [mapdata.level_of(self.cfg, v) for v in np.atleast_1d(z)]
 
 
+# the events analyze() reads, in one pass of the demo (onepass.py, 15/10)
+EVENTS = {"round_freeze_end": ((), ()), "round_officially_ended": ((), ()),
+          "player_death": (("X", "Y", "Z", "team_num", "yaw", "last_place_name"), ())}
+
+
 def analyze(path, me):
-    p = DemoParser(path)
+    from wily.demos import onepass
+    p = onepass.Parser(path, EVENTS)
     map_name = p.parse_header()["map_name"]
     zm = ZoneMap(map_name)
 

@@ -14,10 +14,11 @@ GENERIC = {
 }
 
 MAPS = {
+    # 22/10, his test video: "Outside Tunnel, personne ne le sait": the tunnels' way in from T Spawn is "Tunnels"
     "de_dust2": {
         "LongA": "Long", "OutsideLong": "Outside Long", "LongDoors": "Long Doors", "Side": "Side Pit", "ARamp": "A Ramp",
         "ExtendedA": "Short", "ShortStairs": "Short Stairs", "Catwalk": "Catwalk", "UnderA": "Under A",
-        "MidDoors": "Mid Doors", "UpperTunnel": "Upper Tunnels", "LowerTunnel": "Lower Tunnels", "OutsideTunnel": "Outside Tunnels",
+        "MidDoors": "Mid Doors", "UpperTunnel": "Upper Tunnels", "LowerTunnel": "Lower Tunnels", "OutsideTunnel": "Tunnels",
         "TunnelStairs": "Tunnel Stairs", "BDoors": "B Doors", "Hole": "B Window", "TRamp": "T Ramp",
     },
     "de_mirage": {

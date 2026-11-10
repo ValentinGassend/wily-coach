@@ -3,6 +3,9 @@ const D=__DATA__;
 if(D.local){const f0=window.fetch.bind(window);window.fetch=(u,o)=>f0(typeof u==="string"&&!/^(\/|[a-z]+:)/i.test(u)?"/"+u:u,o)}
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+// an icon of the page's sprite (ui/p2b_icons.html, Lucide, 03/11): in the text's color and size, hidden from screen readers
+// (its text says it); in HTML only, never in a title, a value or a text node
+const IC=(n,c)=>`<svg class="ic${c?" "+c:""}" aria-hidden="true" focusable="false"><use href="#i-${n}"/></svg>`;
 // a text's width in Latin letters, for the SVG labels sized on it (13/10: a Chinese character is about two)
 const TLEN=s=>{let n=0;for(const c of String(s??""))n+=/[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/.test(c)?1.8:1;return n};
 // the page in the player's language (13/10): English is the source and the key, D.L the catalog of D.lang (i18n.py,
@@ -19,7 +22,7 @@ function tln(n,one,other,p){const v=L[other],P=Object.assign({n},p||{});
   if(typeof v==="string"&&v)return fill(v,P);
   return fill(n===1?one:other,P)}
 // the coach's spoken lines (the voice may speak another language than the page's): tlv, and tlvn with a count
-const TLV={miss:false};   // a spoken line had no translation in the voice's language (coachSay then falls back)
+const TLV={miss:false};   // a line had no translation in the language asked (tlv: a chat line in another language than the page's)
 function tlv(s,lang,p){const v=lang&&lang!=="en"?(LV[lang]||{})[s]:null;if(lang&&lang!=="en"&&!v)TLV.miss=true;return fill(typeof v==="string"&&v?v:s,p)}
 function tlvn(n,one,other,lang,p){const v=lang&&lang!=="en"?(LV[lang]||{})[other]:null,P=Object.assign({n},p||{});if(lang&&lang!=="en"&&!v)TLV.miss=true;
   if(v&&typeof v==="object"){let k="other";try{k=new Intl.PluralRules(LOCS[lang]).select(n)}catch(e){}return fill(v[k]||v.other||other,P)}

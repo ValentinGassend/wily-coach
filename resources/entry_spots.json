@@ -1,0 +1,125 @@
+{
+ "_about": "The CTs on a site an exec's entry meets (Entry.cs), where he wants them (20/10, his 17:53 video: \"je ne veux personne en bas ... je veux que les joueurs soient vraiment sur l'espace de bombsite\", each spot marked with an HE dropped at his feet): what covers them ('by': the grenade of the exec meant for it, 'molotov': \"l'idée c'est qu'il brûle\"), crouched or not. Each one put on the base's nearest CT spot of a take within 80 u ('fixed': kept where it is), the base's most met ones he did not mark added (train.take_spots).",
+ "de_fachwerk|B": [
+  {
+   "pos": [
+    1250.0,
+    -482.0,
+    -92.0
+   ],
+   "name": "the cart",
+   "by": "molotov",
+   "his": [
+    1232.7,
+    -487.9,
+    -92.0
+   ],
+   "why": "18 u nearer the fire than his HE: his spot is 51 u from his molotov's nearest flame, never burned in 8 throws of it; here 140 damage each time",
+   "fixed": true
+  },
+  {
+   "pos": [
+    1471.6,
+    -579.6,
+    -97.9
+   ],
+   "name": "the lower exit"
+  },
+  {
+   "pos": [
+    1687.1,
+    -788.4,
+    -97.8
+   ],
+   "name": "the sandbags"
+  },
+  {
+   "pos": [
+    1894.0,
+    -347.6,
+    -86.0
+   ],
+   "name": "the plank"
+  },
+  {
+   "pos": [
+    1610.1,
+    -152.0,
+    -92.0
+   ],
+   "name": "close"
+  },
+  {
+   "pos": [
+    1432.3,
+    -230.1,
+    -92.0
+   ],
+   "name": "close"
+  },
+  {
+   "pos": [
+    1202.0,
+    -250.1,
+    -98.3
+   ],
+   "name": "the low wall",
+   "duck": true
+  },
+  {
+   "pos": [
+    1135.3,
+    -368.0,
+    -92.0
+   ],
+   "name": "the corner"
+  }
+ ],
+ "de_fachwerk|A": [
+  {
+   "pos": [
+    -813.1,
+    -1182.1,
+    20.0
+   ]
+  },
+  {
+   "pos": [
+    -1130.1,
+    -1355.4,
+    -16.0
+   ]
+  },
+  {
+   "pos": [
+    -936.9,
+    -1334.3,
+    -4.0
+   ]
+  },
+  {
+   "pos": [
+    -851.7,
+    -1757.9,
+    -16.0
+   ]
+  },
+  {
+   "pos": [
+    -533.7,
+    -712.9,
+    0.0
+   ],
+   "name": "the short",
+   "by": "molotov"
+  },
+  {
+   "pos": [
+    -357.1,
+    -1312.5,
+    -16.0
+   ]
+  }
+ ],
+ "_A": "20/10 19:47 video, 13:00-13:45: an HE at each (\"il y en a un ici, potentiellement un ici ... celui qui doit brûler dans la molotov est ici, dans la short ... il en manque peut-être un ici\")"
+}

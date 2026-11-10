@@ -11,11 +11,15 @@
     <button type="submit" id="qbtn" data-t>Open</button>
   </form></div>
   <div class="bar-right">
+    <div class="lang" id="lang" hidden><button type="button" class="lang-btn" id="langbtn" aria-haspopup="true" aria-expanded="false" aria-controls="langmenu"></button>
+      <div class="lang-menu" id="langmenu" hidden></div></div>
     <div class="acct" id="acct" hidden><button type="button" class="acct-btn" id="acctbtn" aria-haspopup="true" aria-expanded="false" aria-controls="acctmenu"></button>
       <div class="acct-menu" id="acctmenu" hidden>
         <div class="am-sec"><span class="am-h" data-t>Favorites</span><div class="favlist" id="favlist"></div></div>
         <div class="am-sec">
           <button type="button" class="am-item" id="updbtn" hidden title="Fetch your new matches from Steam and analyze them" data-t-title data-t>↻ Update my matches</button>
+          <button type="button" class="am-item" id="impbtn" title="FACEIT's .dem.zst, a .dem, or a .zip / .gz / .bz2: unpacked and added to your matches. You can also drop the files anywhere on the page." data-t-title data-t>⬆ Import demos (FACEIT…)</button>
+          <input type="file" id="impfile" multiple accept=".dem,.zst,.gz,.bz2,.xz,.zip" hidden>
           <a href="#settings" class="am-item gear" data-view="settings" data-t>Settings</a>
         </div>
       </div>
@@ -49,6 +53,7 @@
 <div class="usage-note" id="usage-note" role="region" aria-label="What this alpha shares" data-t-aria-label hidden><p data-t><b>Help improve Wily, anonymously.</b> Two things are on by default:</p><ul><li data-t><b>Your matches, anonymized:</b> what the app extracts from each demo (positions, duels, grenades, buys, rounds). Every SteamID is replaced by a random ID used for that match only, and every name is removed. Never your demos, your voice, your settings or your profile.</li><li data-t><b>How you use the app:</b> which pages you open and for how long, the buttons you use and the errors, per day. No ID, no SteamID, no name, nothing you type.</li></ul><p data-t>Your matches grow the reference base, and the usage stats show what needs fixing. You can turn either one off now, or any time in Settings.</p>
   <div class="btns"><button type="button" class="primary" id="un-ok" data-t>OK</button><button type="button" id="un-off" data-t>Turn both off</button><button type="button" id="un-more" data-t>Choose in Settings</button></div></div>
 <div class="jobpanel" id="job" hidden><div class="in" role="status" aria-live="polite"></div></div>
+<div class="dropzone" aria-hidden="true"><div><b data-t>Drop your demos here</b><span data-t>FACEIT's .dem.zst, a .dem, or a .zip / .gz / .bz2: Wily unpacks them and adds them to your matches.</span></div></div>
 <div class="bcast" id="bcast" hidden></div>
 <main>
   <section class="view" id="v-ingame"></section>

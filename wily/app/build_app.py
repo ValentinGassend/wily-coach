@@ -147,7 +147,14 @@ def write_player(sid, out_dir=SITE):
         dst = os.path.join(out_dir, "replays", str(sid))
         os.makedirs(dst, exist_ok=True)
         for f in os.listdir(rp):
-            shutil.copy(os.path.join(rp, f), os.path.join(dst, f))
+            s, d = os.path.join(rp, f), os.path.join(dst, f)
+            try:   # already there (same size and date): not copied again (16/10: 82 replays, 37 MB, at each page write)
+                a, b = os.stat(s), os.stat(d)
+                if a.st_size == b.st_size and int(a.st_mtime) == int(b.st_mtime):
+                    continue
+            except OSError:
+                pass
+            shutil.copy2(s, d)
     return index_entry(p)
 
 
@@ -189,6 +196,7 @@ def shell_html(index, local=False, lang=None, relang=False):
             "local": local, "generated": dt.datetime.now().isoformat(timespec="minutes"),
             # 12/10, a Linux tester could not find the training server's switch (Settings > Game detection): Prepare shows it
             "linux": config.LINUX, "linux_training": bool(s.get("linux_training")),
+            "recette": bool(s.get("recette")),   # 29/10: his own recette (every drill the latest tests failed), his setting only
             # 13/10, the app in the player's language: its catalog, the coach's spoken lines in every language, the choice
             "lang": lang, "L": i18n.page_catalog(lang), "LV": i18n.voice_catalogs(_voice_keys()), "langs": i18n.LANGS,
             "ui_lang": s.get("ui_lang") if s.get("ui_lang") in i18n.LANGS else "auto",

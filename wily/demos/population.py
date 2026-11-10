@@ -14,6 +14,7 @@ import pandas as pd
 from demoparser2 import DemoParser
 
 from wily.core import config
+from wily.core import ledger
 
 TICK = 64
 GRENADE_INV = {"Flashbang", "High Explosive Grenade", "Smoke Grenade", "Molotov", "Incendiary Grenade", "Decoy Grenade"}
@@ -173,7 +174,7 @@ def add_reads(mid):
     df = pd.read_parquet(f)
     if "untraded_n" in df.columns:
         return False
-    p = DemoParser(os.path.join(config.CACHE, f"{mid}.dem"))
+    p = DemoParser(config.demo(mid))
     hurt = p.parse_event("player_hurt")
     deaths = p.parse_event("player_death")
     for d in (hurt, deaths):
@@ -187,13 +188,19 @@ def add_reads(mid):
     return True
 
 
+# the events extract() reads, in one pass of the demo (onepass.py, 15/10)
+EVENTS = {"round_freeze_end": ((), ()), "rank_update": ((), ()), "player_hurt": ((), ()), "player_death": ((), ()),
+          "weapon_fire": (("velocity_X", "velocity_Y"), ()), "player_blind": ((), ())}
+
+
 def extract(mid):
-    dem = os.path.join(config.CACHE, f"{mid}.dem")
+    dem = config.demo(mid)
     ddir = os.path.join(config.DEEP, mid)
     duels = pd.read_parquet(os.path.join(ddir, "duels.parquet"))
     nades = __import__("wily.demos.deep", fromlist=["deep"]).read_nades(os.path.join(ddir, "grenades.parquet"))
     samples = pd.read_parquet(os.path.join(ddir, "samples.parquet"), columns=["steamid", "name", "side", "round"])
-    p = DemoParser(dem)
+    from wily.demos import onepass
+    p = onepass.Parser(dem, EVENTS)
     hdr = p.parse_header()
     freeze = p.parse_event("round_freeze_end")["tick"].tolist()
     n_rounds = len(freeze)
@@ -368,10 +375,12 @@ def extract(mid):
 
 def run_all(force=False):
     done = 0
+    have = set() if force else ledger.names(OUT)   # 15/10: one read of each folder, not file checks per match
+    dems = ledger.names(config.CACHE, ".dem")
     for mid in sorted(os.listdir(config.DEEP)):
-        if not os.path.exists(os.path.join(config.DEEP, mid, "meta.json")) or not os.path.exists(os.path.join(config.CACHE, f"{mid}.dem")):
+        if mid in have or mid not in dems:
             continue
-        if not force and os.path.exists(os.path.join(OUT, f"{mid}.parquet")):
+        if not os.path.exists(os.path.join(config.DEEP, mid, "meta.json")):
             continue
         try:
             extract(mid)
@@ -383,8 +392,8 @@ def run_all(force=False):
 
 
 def load():
-    fs = [os.path.join(OUT, f) for f in os.listdir(OUT) if f.endswith(".parquet")] if os.path.exists(OUT) else []
-    return pd.concat([pd.read_parquet(f) for f in fs], ignore_index=True) if fs else pd.DataFrame()
+    """Every match's population as one (kept consolidated: only the new matches' files are read, ledger.py)."""
+    return ledger.stacked(OUT, "population", only=lambda f: f[:-8].isdigit())   # not nades.parquet, tside_all.parquet
 
 
 if __name__ == "__main__":

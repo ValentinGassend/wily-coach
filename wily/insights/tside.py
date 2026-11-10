@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from wily.core import config
+from wily.core import ledger
 from wily.core.i18n import N_, tr, trn
 from wily.insights import midround
 from wily.demos.deep import read_nades   # a match with no grenade has an empty table without columns
@@ -183,6 +184,9 @@ def analyze(ddir):
     return pd.DataFrame(rows)
 
 
+REQ = ("t_deaths", "t_paths")   # the columns a match's file must have (an older version's is analyzed again)
+
+
 def _outdated(f):
     """A file written by an older version (no deaths per round yet) is analyzed again."""
     import pyarrow.parquet as pq
@@ -190,25 +194,34 @@ def _outdated(f):
         names = pq.read_schema(f).names
     except Exception:
         return True
-    return "map" in names and ("t_deaths" not in names or "t_paths" not in names)
+    return "map" in names and any(c not in names for c in REQ)
 
 
 def run_all(log=print, force=False):
+    """The matches whose T side is missing, older than their rounds or written by an older version (the ones found
+    up to date before are not opened again: ledger.py, 15/10)."""
     os.makedirs(OUT, exist_ok=True)
+    led = ledger.Ledger("tside", version=list(REQ))
+    have = ledger.names(OUT)
     n = 0
-    for mid in os.listdir(config.DEEP):
+    for mid, stamp in ledger.folders(config.DEEP).items():
+        if not force and mid in have and led.settled(mid, stamp):
+            continue
         d = os.path.join(config.DEEP, mid)
         f = os.path.join(OUT, f"{mid}.parquet")
         src = os.path.join(d, "rounds.parquet")
         if not os.path.exists(src) or not os.path.exists(os.path.join(d, "samples.parquet")):
             continue
-        if not force and os.path.exists(f) and os.path.getmtime(f) >= os.path.getmtime(src) and not _outdated(f):
+        if not force and mid in have and os.path.getmtime(f) >= os.path.getmtime(src) and not _outdated(f):
+            led.mark(mid, stamp)
             continue
         try:
             analyze(d).to_parquet(f)
+            led.mark(mid, stamp)
             n += 1
         except Exception as e:
             log(f"[{mid}] T side: {e}")
+    led.save()
     return n
 
 
@@ -220,11 +233,13 @@ _MEM = {}
 
 
 def _base_state():
-    try:
-        fs = [f for f in os.listdir(OUT) if f.endswith(".parquet")]
+    try:   # one read of the folder (os.scandir has the dates: no file opened, 15/10)
+        with os.scandir(OUT) as it:
+            st = {e.name: e.stat().st_mtime for e in it if e.name.endswith(".parquet")}
+        fs = [f for f in os.listdir(OUT) if f in st]
     except OSError:
         return None, []
-    newest = max((os.path.getmtime(os.path.join(OUT, f)) for f in fs), default=0.0)
+    newest = max(st.values(), default=0.0)
     return f"{len(fs)}:{newest:.0f}", fs
 
 
@@ -237,15 +252,13 @@ def _raw(state, fs):
             return pd.read_parquet(ALL)
     except (OSError, ValueError):
         pass
-    dfs = []
-    for f in fs:
-        x = pd.read_parquet(os.path.join(OUT, f))
+    def prep(x, f):
         if len(x):
             x["match"] = f[:-8]
-            dfs.append(x)
-    if not dfs:
+        return x
+    df = ledger.stacked(OUT, "tside", prep=prep, skip_empty=True)   # only the new matches' files read (15/10)
+    if not len(df):
         return pd.DataFrame()
-    df = pd.concat(dfs, ignore_index=True)
     try:
         tmp = ALL + f".{os.getpid()}.tmp"
         df.to_parquet(tmp)
@@ -274,7 +287,92 @@ def load():
     return hit[1].copy()
 
 
+# 16/10 (the user: "encore beaucoup beaucoup trop long"): the table as load() gives it kept on disk with its matches'
+# dates; a new match's rounds read with the zones and lanes learned on the base before it and joined to it (the whole
+# base read and learned again at each new match: 10 s). Learned again once the base has grown 5 % since, or when a
+# match of before left (tside.nades.fresh keeps the tendencies the same way, until 15 %).
+PROC = os.path.join(config.OUT, "population", "tside_proc.parquet")
+GROW = 0.05
+
+
+def _files():
+    try:
+        with os.scandir(OUT) as it:
+            return {e.name: e.stat().st_mtime_ns for e in it if e.name.endswith(".parquet")}
+    except OSError:
+        return {}
+
+
 def _load(state, fs):
+    import json
+    now = _files()
+    try:
+        meta = json.load(open(PROC + ".json", encoding="utf-8"))
+        old, learned = meta["files"], int(meta["learned"])
+        todo = [f for f in fs if old.get(f) != now.get(f)]   # new, or written again
+        if all(f in now for f in old) and len(now) <= learned * (1 + GROW) and len(todo) <= learned * GROW:
+            df = _joined(pd.read_parquet(PROC), todo)
+            if df is not None:
+                if todo:
+                    _keep(df, now, learned)
+                return df
+    except Exception as e:   # no table kept, or a new match it can't take: learned again, as before
+        if not isinstance(e, (OSError, ValueError, KeyError)):
+            print("tside: learned again:", type(e).__name__, e, flush=True)
+    df = _learned(state, fs)
+    if len(df):
+        _keep(df, now, len(now))
+    return df
+
+
+def _keep(df, files, learned):
+    import json
+    try:
+        tmp = f"{PROC}.{os.getpid()}.tmp"
+        df.to_parquet(tmp)
+        os.replace(tmp, PROC)
+        json.dump({"files": files, "learned": learned}, open(PROC + ".json", "w", encoding="utf-8"))
+    except Exception as e:   # a column parquet refuses: learned again next time
+        print("tside: table not kept:", e, flush=True)
+        try:
+            os.remove(PROC + ".json")
+        except OSError:
+            pass
+
+
+def _joined(kept, todo):
+    """The table kept, with the matches of todo (new, or written again) read with the zones and lanes it was learned
+    with. None: they can't be read that way (learned again)."""
+    import json
+    from wily.insights import lanes as LN
+    if not todo:
+        return kept
+    parts = []
+    for f in todo:
+        try:
+            x = pd.read_parquet(os.path.join(OUT, f))
+        except Exception:   # a file being written: learned again, as before
+            return None
+        if len(x):
+            x["match"] = f[:-8]
+            parts.append(x)
+    kept = kept[~kept["match"].isin({f[:-8] for f in todo})]
+    if not parts:
+        return kept.reset_index(drop=True)
+    zs = json.load(open(ZONES, encoding="utf-8"))
+    new = _sequences(_dynamics(_directions(pd.concat(parts, ignore_index=True), zs=zs)))
+    if "play" in kept:
+        new = LN.classify(new, _lanes(), LN.geo())
+    for c in kept.columns.intersection(new.columns):   # the types of the kept table (a column all empty in the new rows)
+        if new[c].dtype != kept[c].dtype:
+            try:
+                new[c] = new[c].astype(kept[c].dtype)
+            except (TypeError, ValueError):
+                pass
+    return pd.concat([kept, new], ignore_index=True).sort_values(["match", "half", "round"]).reset_index(drop=True)
+
+
+def _learned(state, fs):
     df = _raw(state, fs)
     if not len(df):
         return pd.DataFrame()
@@ -402,11 +500,15 @@ def _dynamics(df):
 
 
 def _context(r):
-    if r.rih == 1:
+    return _ctx(r.rih, r.pistol_won, r.T_buy)
+
+
+def _ctx(rih, pistol_won, T_buy):
+    if rih == 1:
         return "pistol"
-    if r.rih == 2 and r.pistol_won is not None:
-        return "r2_win" if r.pistol_won else "r2_loss"
-    return r.T_buy if r.T_buy in ("eco", "force", "full") else None
+    if rih == 2 and pistol_won is not None:
+        return "r2_win" if pistol_won else "r2_loss"
+    return T_buy if T_buy in ("eco", "force", "full") else None
 
 
 def _sequences(df):
@@ -414,38 +516,44 @@ def _sequences(df):
     df = df.sort_values(["match", "half", "round"]).reset_index(drop=True)
     cols = {k: [] for k in ("prev_site", "prev_won", "streak", "nA", "nB", "pistol_won", "losses", "prev_dyn", "prev_lone",
                             "rush_before", "n_before")}
-    for _, g in df.groupby(["match", "half"], sort=False):
-        last_site, last_won, streak, nA, nB, pw, losses = None, None, 0, 0, 0, None, 0
-        last_dyn, last_lone, rushes, nb = None, None, 0, 0
-        for _, r in g.iterrows():
-            cols["prev_site"].append(last_site)
-            cols["prev_won"].append(last_won)
-            cols["streak"].append(streak)
-            cols["nA"].append(nA)
-            cols["nB"].append(nB)
-            cols["pistol_won"].append(pw)
-            cols["losses"].append(losses)
-            cols["prev_dyn"].append(last_dyn)
-            cols["prev_lone"].append(last_lone)
-            cols["rush_before"].append(rushes)
-            cols["n_before"].append(nb)
-            last_dyn, last_lone = r.get("dyn"), bool(r.get("lone_n") or 0)
-            rushes += r.get("dyn") == "rush"
-            nb += 1
-            if r.rih == 1:
-                pw = bool(r.T_won)
-            losses = 0 if r.T_won else losses + 1
-            last_won = bool(r.T_won)
-            if r.site in ("A", "B"):
-                streak = streak + 1 if r.site == last_site else 1
-                last_site = r.site
-                nA += r.site == "A"
-                nB += r.site == "B"
-            else:
-                last_site, streak = "-", 0
+    # 16/10: the columns read as lists, the rows in their order (sorted: each team's half in a row), not row by row
+    # through pandas (97,845 rows: most of the time of a plan's T side)
+    col = lambda c: df[c].tolist() if c in df else [None] * len(df)
+    key = object()
+    for m_, h_, dyn, lone_n, rih, T_won, site in zip(df["match"].tolist(), df["half"].tolist(), col("dyn"), col("lone_n"),
+                                                      df.rih.tolist(), df.T_won.tolist(), df.site.tolist()):
+        if (m_, h_) != key:   # a new team's half
+            key = (m_, h_)
+            last_site, last_won, streak, nA, nB, pw, losses = None, None, 0, 0, 0, None, 0
+            last_dyn, last_lone, rushes, nb = None, None, 0, 0
+        cols["prev_site"].append(last_site)
+        cols["prev_won"].append(last_won)
+        cols["streak"].append(streak)
+        cols["nA"].append(nA)
+        cols["nB"].append(nB)
+        cols["pistol_won"].append(pw)
+        cols["losses"].append(losses)
+        cols["prev_dyn"].append(last_dyn)
+        cols["prev_lone"].append(last_lone)
+        cols["rush_before"].append(rushes)
+        cols["n_before"].append(nb)
+        last_dyn, last_lone = dyn, bool(lone_n or 0)
+        rushes += dyn == "rush"
+        nb += 1
+        if rih == 1:
+            pw = bool(T_won)
+        losses = 0 if T_won else losses + 1
+        last_won = bool(T_won)
+        if site in ("A", "B"):
+            streak = streak + 1 if site == last_site else 1
+            last_site = site
+            nA += site == "A"
+            nB += site == "B"
+        else:
+            last_site, streak = "-", 0
     for k, v in cols.items():
         df[k] = v
-    df["ctx"] = df.apply(_context, axis=1)
+    df["ctx"] = [_ctx(a, b, c) for a, b, c in zip(df.rih.tolist(), df.pistol_won.tolist(), df.T_buy.tolist())]
     return df
 
 
@@ -683,8 +791,12 @@ VERSION = 32   # bump when the summary changes shape: the cache is rebuilt
 
 
 def _stamp():
-    fs = [f for f in os.listdir(OUT) if f.endswith(".parquet")] if os.path.exists(OUT) else []
-    return f"v{VERSION}-{len(fs)}-{int(max((os.path.getmtime(os.path.join(OUT, f)) for f in fs), default=0))}"
+    try:   # one read of the folder (os.scandir has the dates: no file opened, 15/10)
+        with os.scandir(OUT) as it:
+            ts = [e.stat().st_mtime for e in it if e.name.endswith(".parquet")]
+    except OSError:
+        ts = []
+    return f"v{VERSION}-{len(ts)}-{int(max(ts, default=0))}"
 
 
 def tendencies(maps, df=None):
@@ -816,11 +928,12 @@ def _map_dirs():
     by = {}
     if not os.path.isdir(config.DEEP):   # a fresh install before its first analysis: no match yet
         return by
+    from wily.core import ledger
+    facts = ledger.match_facts()   # 15/10: not the 5,000 meta.json read again
     for mid in os.listdir(config.DEEP):
-        d = os.path.join(config.DEEP, mid)
-        m = midround._meta(d).get("map")
+        m = (facts.get(mid) or {}).get("map")
         if m:
-            by.setdefault(m, []).append(d)
+            by.setdefault(m, []).append(os.path.join(config.DEEP, mid))
     return by
 
 
@@ -979,7 +1092,7 @@ def multi_events(kills):
     if len(cur) >= 2:
         out.append(cur)
     return [{"px": [float(np.mean([k["px"][0] for k in e])), float(np.mean([k["px"][1] for k in e]))], "level": e[0]["level"],
-             "n": len(e), "t": float(e[0]["t"]), "zone": max(set(k["zone"] for k in e), key=[k["zone"] for k in e].count)} for e in out]
+             "n": len(e), "t": float(e[0]["t"]), "zone": max(sorted(set(k["zone"] for k in e), key=str), key=[k["zone"] for k in e].count)} for e in out]
 
 
 def multi_spots(events, r=30, top=12, min_n=1):
@@ -1000,7 +1113,7 @@ def multi_spots(events, r=30, top=12, min_n=1):
     cl = [c for c in cl if c["n"] >= min_n]
     cl.sort(key=lambda c: (-c["n"], -c["best"]))
     return [{"px": [round(c["x"] / c["n"]), round(c["y"] / c["n"])], "level": c["level"], "n": c["n"], "best": c["best"],
-             "t_med": round(float(np.median(c["ts"]))), "zone": max(set(c["zones"]), key=c["zones"].count)} for c in cl[:top]]
+             "t_med": round(float(np.median(c["ts"]))), "zone": max(sorted(set(c["zones"]), key=str), key=c["zones"].count)} for c in cl[:top]]   # ties: one order
 
 
 def _t_routes(mp, g, dirs, top=2):
@@ -2141,6 +2254,38 @@ def retake_table(pool):
     return sorted(out, key=lambda x: (-x["ct"], x["t"]))
 
 
+_SI = {}
+
+
+def _story_inputs():
+    """The zones, lanes and map geometry every match's story reads: read once for the stories of a page build (16/10:
+    3 files, 5 MB, read again for each of the player's matches), again when one changes or after 30 s."""
+    import json
+    import time
+    from wily.insights import lanes as LN
+    def stamp(p):
+        try:
+            st = os.stat(p)
+            return st.st_mtime_ns, st.st_size
+        except OSError:
+            return None
+    key = (stamp(ZONES), stamp(LANES), stamp(LN.GEO))
+    hit = _SI.get("v")
+    if hit and hit[0] == key and time.monotonic() - hit[1] < 30:
+        return hit[2]
+    try:
+        zs = json.load(open(ZONES, encoding="utf-8"))
+    except (OSError, ValueError):
+        zs = {}
+    try:
+        G = LN.geo()
+    except Exception as e:   # the story goes on without the plays, as before
+        G = e
+    v = (zs, _lanes(), G)
+    _SI["v"] = (key, time.monotonic(), v)
+    return v
+
+
 def match_story(mid):
     """Round by round, for one match: where the Ts went and how (rush, execute...), who died where and when (the Ts
     killed alone flagged), the plant and the result. Times in seconds since the end of the freeze time."""
@@ -2151,15 +2296,13 @@ def match_story(mid):
     df = pd.read_parquet(f)
     if not len(df) or "t_deaths" not in df:
         return None
-    try:
-        zs = json.load(open(ZONES, encoding="utf-8"))
-    except (OSError, ValueError):
-        zs = {}
+    zs, ls, G = _story_inputs()
     df = _dynamics(_directions(df, zs=zs))
     try:   # the play of each round, with the lanes this match's Ts used
         from wily.insights import lanes as LN
-        ls = _lanes()
-        df = LN.classify(df, ls, LN.geo())
+        if isinstance(G, Exception):
+            raise G
+        df = LN.classify(df, ls, G)
         mp = df["map"].iloc[0]
         df["play_name"] = [LN.name(p, ls.get(mp), [int(i) for i in str(u).split(",") if i != ""]) for p, u in zip(df.play, df.play_lanes)]
     except Exception:

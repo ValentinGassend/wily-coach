@@ -24,7 +24,7 @@ MURKY = "https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/data/avail
 
 def game_values():
     try:
-        req = urllib.request.Request(MURKY, headers={"User-Agent": "cs2-coach"})
+        req = urllib.request.Request(MURKY, headers={"User-Agent": "wily-coach"})
         return {m: (x.get("radar_info") or {}) for m, x in json.loads(urllib.request.urlopen(req, timeout=30).read())["maps"].items()}
     except Exception as e:
         print("game values unavailable:", e)

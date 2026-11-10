@@ -173,6 +173,16 @@ def held():
     return n
 
 
+def drop_held():
+    """The held uploads deleted (15/10, Settings: the coach decides): their zips and notes. -> how many matches."""
+    n = held()
+    for f in os.listdir(HELD) if os.path.isdir(HELD) else []:
+        if f.endswith((".zip", ".json")):
+            os.remove(os.path.join(HELD, f))
+    log(f"{n} held match(es) deleted")
+    return n
+
+
 def ingest(dest=None, follow=True, release=False):
     """The pulled zips: every match checked, the new ones into out/deep (or dest), then the base's per-match tables;
     an upload sent before its player saw the notice that speaks of the matches: held (release: those, into the base).

@@ -8,6 +8,7 @@ mid-round numbers of the pros, the lineups found in their throws).
 Usage: python -m wily.base.fetch_demos [matches=20] [--stars 2]     the latest top-tier matches
        python -m wily.base.fetch_demos --teams [--per-team 4]        the latest matches of the current top teams
        python -m wily.base.fetch_demos --import [folder or file]     demos you downloaded yourself from HLTV (default: Downloads)
+       python -m wily.base.fetch_demos --import <folder> --remove    the same, each file deleted once in (Settings' inbox)
        python -m wily.base.fetch_demos --matchlist                    the demos of your cached match list (its first job)
 
 04/10: Antigravity's version tried HLTV demo numbers one by one down from 88000, up to 5,000 demos (about 2 TB from
@@ -24,8 +25,9 @@ from wily.core import config
 WAIT = 60   # seconds between two checks while CS2 is open or the app is busy
 
 
-def _go():
-    """Before each download: wait while CS2 is open or the app is busy; False when the disk is too full to go on."""
+def _go(on_wait=None):
+    """Before each download: wait while CS2 is open or the app is busy; False when the disk is too full to go on.
+    on_wait(why): told each time it waits."""
     from wily.base import grow
     while True:
         if grow.free_gb() < grow.MIN_FREE_GB:
@@ -35,6 +37,8 @@ def _go():
         if not why:
             return True
         print(f"waiting: {why}", flush=True)
+        if on_wait:
+            on_wait(why)
         time.sleep(WAIT)
 
 
@@ -71,10 +75,31 @@ def _refresh():
     nades_catalog.run_all(log=print)
 
 
-def import_demos(path):
-    """Pro demos you downloaded yourself (the GOTV demo button of a match page on HLTV): every .rar, .zip or .dem of
-    that folder (or that file) goes to the pro base like a fetched one. Your files stay where they are; their teams are
-    read from the demos, the date is the file's."""
+STATUS = os.path.join(config.OUT, "pro", "import_status.json")   # an import's progress, followed by Settings' page
+
+
+def _fingerprint(folder):
+    """A map's first duels (their tick, killer, victim) as one string: the same demo analyzed twice gives the same one."""
+    import pandas as pd
+    try:
+        D = pd.read_parquet(os.path.join(folder, "duels.parquet"), columns=["tick", "killer", "victim"]).head(12)
+    except Exception:
+        return None
+    return "|".join(f"{int(t)}:{int(k)}:{int(v)}" for t, k, v in zip(D.tick, D.killer, D.victim)) or None
+
+
+def _fingerprints(deep_pro):
+    """{map folder: fingerprint} of the pro base, each read again only when its folder changes (out/ledgers)."""
+    from wily.core import ledger
+    return ledger.per_match("pro_fingerprints", ledger.folders(deep_pro), lambda mid: _fingerprint(os.path.join(deep_pro, mid)))
+
+
+def import_demos(path, remove=False):
+    """Pro demos you downloaded yourself (the GOTV demo button of a match page on HLTV): every .rar, .zip, .7z or .dem
+    of that folder (or that file) goes to the pro base like a fetched one. Your files stay where they are; their teams
+    are read from the demos, the date is the file's. remove (22/10, Settings' "Add demos": the copies the app received
+    in its inbox): each file deleted once its maps are in the pro base; one that could not be read stays, with why.
+    Its progress in out/pro/import_status.json (the file, the step: waiting and why, extracting, its map i of n)."""
     import re
     import shutil
     import subprocess
@@ -82,17 +107,39 @@ def import_demos(path):
     from wily.demos import style
     pro = _pro()
     files = [path] if os.path.isfile(path) else sorted(os.path.join(path, f) for f in os.listdir(path)
-                                                       if f.lower().endswith((".rar", ".zip", ".dem")))
+                                                       if f.lower().endswith((".rar", ".zip", ".7z", ".dem")))
+    if not files:   # nothing there (a run started for a file another run took): the last run's result stays shown
+        print("no demo to import", flush=True)
+        return 0
+    st = {"pid": os.getpid(), "started": time.time(), "files": [os.path.basename(f) for f in files], "done": [], "failed": []}
+
+    def say(**kw):
+        st.update(kw, t=time.time())
+        config.write_json(STATUS, st)
+
+    def gone(f):
+        if remove:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+    say(file=None, step=None)
     reg = _registry()
     added = 0
     for f in files:
-        stem = re.sub(r"[^a-z0-9]+", "-", os.path.splitext(os.path.basename(f))[0].lower()).strip("-")[:60]
+        name = os.path.basename(f)
+        stem = re.sub(r"[^a-z0-9]+", "-", os.path.splitext(name)[0].lower()).strip("-")[:60]
         key = f"dl:{stem}"
         if key in reg and reg[key].get("demos"):
-            print(f"{os.path.basename(f)}: already in the pro base", flush=True)
+            print(f"{name}: already in the pro base", flush=True)
+            st["done"].append({"file": name, "teams": reg[key].get("teams") or [], "maps": reg[key].get("maps") or [], "already": True})
+            gone(f)
+            say(file=None, step=None)
             continue
-        if not _go():
+        if not _go(lambda why: say(file=name, step="wait", why=why)):
+            say(file=None, step="disk")
             break
+        say(file=name, step="extract")
         tmp = os.path.join(pro.RAW, f"import_{stem}")
         if f.lower().endswith(".dem"):
             dems = [f]
@@ -102,17 +149,35 @@ def import_demos(path):
             dems = sorted(os.path.join(tmp, x) for x in os.listdir(tmp) if x.endswith(".dem")) if r.returncode == 0 and os.path.exists(tmp) else []
             if not dems:
                 print(f"{os.path.basename(f)}: no demo inside (or 7-Zip could not open it)", flush=True)
-        done = []
+        done, errs, twice = [], [], []
         for i, dem in enumerate(dems):
             pid = f"pro_dl_{stem}_{i}"
+            say(file=name, step="map", i=i + 1, n=len(dems))
             try:
                 if not os.path.exists(os.path.join(pro.DEEP_PRO, pid, "meta.json")):
                     deep.extract(dem, os.path.join(pro.DEEP_PRO, pid))
+                # a map the pro base has already (22/10: the same match under another file name, a LAN's demo already
+                # fetched): its throws would count twice in the stuffs, its new folder dropped
+                fp = _fingerprint(os.path.join(pro.DEEP_PRO, pid))
+                same = next((m for m, x in _fingerprints(pro.DEEP_PRO).items() if fp and x == fp and m != pid), None)
+                if same:
+                    shutil.rmtree(os.path.join(pro.DEEP_PRO, pid), ignore_errors=True)
+                    twice.append(same)
+                    print(f"  {os.path.basename(dem)}: already in the pro base ({same})", flush=True)
+                    continue
                 style.extract(pid, deep_dir=pro.DEEP_PRO, out_dir=pro.STYLE_PRO)
                 done.append({"id": pid, "file": os.path.basename(dem), "teams": pro.clan_names(dem)})
             except Exception as e:
                 print(f"  {os.path.basename(dem)}: {e}", flush=True)
+                errs.append(f"{type(e).__name__}: {e}"[:160])
         shutil.rmtree(tmp, ignore_errors=True)
+        if not done and twice and not errs:   # every map of it there already
+            st["done"].append({"file": name, "teams": [], "maps": [], "already": True})
+            gone(f)
+            say(file=None, step=None)
+        elif not done:
+            st["failed"].append({"file": name, "why": "; ".join(errs[:2]) if errs else "no demo"})
+            say(file=None, step=None)
         if done:
             names = [t for d in done for t in d["teams"].values()]
             maps = []
@@ -129,9 +194,15 @@ def import_demos(path):
                 json.dump(reg, fh, ensure_ascii=False, indent=1)
             added += len(done)
             print(f"{os.path.basename(f)}: {' vs '.join(reg[key]['teams']) or 'teams not in the demo'}, {len(done)} map(s)", flush=True)
+            st["done"].append({"file": name, "teams": reg[key]["teams"], "maps": maps})
+            gone(f)
+            say(file=None, step=None)
     print(f"{added} pro map(s) added", flush=True)
     if added:
+        say(file=None, step="refresh")
         _refresh()
+    say(file=None, step=None, ended=time.time(), added=added)
+    return added
 
 
 def _registry():
@@ -148,7 +219,7 @@ def matchlist():
 
     def get(m):
         dem = os.path.join(CACHE, f"{m['match_id']}.dem")
-        if os.path.exists(dem):
+        if config.has_demo(m["match_id"]):   # in the cache or archived
             return f"{m['match_id']} already there"
         bz = dem + ".bz2"
         download(m["url"], bz)
@@ -175,7 +246,8 @@ if __name__ == "__main__":
         matchlist()
     elif "--import" in a:
         i = a.index("--import")
-        import_demos(a[i + 1] if i + 1 < len(a) else os.path.join(os.path.expanduser("~"), "Downloads"))
+        where = a[i + 1] if i + 1 < len(a) and not a[i + 1].startswith("--") else os.path.join(os.path.expanduser("~"), "Downloads")
+        import_demos(where, remove="--remove" in a)
     else:
         pro_demos(n=n, stars=opt("--stars", 2), teams="--teams" in a, per_team=opt("--per-team", 4))
     print("DONE", flush=True)

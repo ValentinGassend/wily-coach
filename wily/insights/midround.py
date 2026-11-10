@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from wily.core import config
+from wily.core import ledger
 from wily.core.i18n import N_
 
 OUT = os.path.join(config.OUT, "population", "midround")
@@ -384,18 +385,25 @@ def run_all(workers=6, log=print, force=False):
             continue
         os.makedirs(out, exist_ok=True)
         os.makedirs(out_r, exist_ok=True)
+        have = set() if force else ledger.names(out)   # 15/10: one read of the folder, not a file check per match
         for mid in os.listdir(base):
+            if mid in have:
+                continue
             d = os.path.join(base, mid)
             if not os.path.exists(os.path.join(d, "samples.parquet")):
                 continue
             if not pro and not os.path.exists(os.path.join(d, "rounds.parquet")):
                 continue
-            if force or not os.path.exists(os.path.join(out, f"{mid}.parquet")):
-                todo.append((d, out, out_r, pro))
+            todo.append((d, out, out_r, pro))
     if not todo:
         return 0
     log(f"Mid-round: {len(todo)} demo(s)…")
     from concurrent.futures import ProcessPoolExecutor
+    if len(todo) == 1:   # one new match (a sync's): here, no process started for it (16/10: 1 s of the extraction; it
+        mid, res = _one(todo[0])   # reads the tables only, never a demo)
+        if isinstance(res, str):
+            log(f"  [{mid}] {res}")
+        return 1
     with ProcessPoolExecutor(min(workers, len(todo))) as ex:
         for i, (mid, res) in enumerate(ex.map(_one, todo), 1):
             if isinstance(res, str):
@@ -404,21 +412,14 @@ def run_all(workers=6, log=print, force=False):
 
 
 def load(pro=False):
-    base = OUT_PRO if pro else OUT
-    if not os.path.exists(base):
-        return pd.DataFrame()
-    fs = [os.path.join(base, f) for f in os.listdir(base) if f.endswith(".parquet")]
-    return pd.concat([pd.read_parquet(f) for f in fs], ignore_index=True) if fs else pd.DataFrame()
+    """Every match's table as one (kept consolidated: only the new matches' files are read, ledger.py)."""
+    return ledger.stacked(OUT_PRO if pro else OUT, "midround_pro" if pro else "midround")
 
 
 def load_routes(pro=False):
-    base = OUT_PRO_R if pro else OUT_R
-    if not os.path.exists(base):
-        return pd.DataFrame()
-    fs = [os.path.join(base, f) for f in os.listdir(base) if f.endswith(".parquet")]
-    dfs = [pd.read_parquet(f) for f in fs]
-    dfs = [d.dropna(axis=1, how="all") for d in dfs if len(d)]
-    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+    """Every match's rotations as one (kept consolidated: only the new matches' files are read, ledger.py)."""
+    return ledger.stacked(OUT_PRO_R if pro else OUT_R, "routes_pro" if pro else "routes",
+                          prep=lambda d, f: d.dropna(axis=1, how="all"), skip_empty=True)
 
 
 # ---------- benchmarks ----------

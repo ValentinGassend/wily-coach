@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -123,7 +124,15 @@ def plugin():
     return True
 
 
+_MAIN = threading.Lock()   # the app's watch (serve.server_copy_watch) and a warm-up's start: one at a time
+
+
 def main(log=print):
+    with _MAIN:
+        return _main(log)
+
+
+def _main(log=print):
     if not SRC or not os.path.isdir(os.path.join(SRC, "game", "csgo")):
         raise RuntimeError("CS2 was not found in Steam's libraries: install it, then try again")
     if not _same_place(SRC, DST):

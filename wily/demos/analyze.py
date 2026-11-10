@@ -13,7 +13,6 @@ from collections import Counter, defaultdict
 
 import numpy as np
 import pandas as pd
-from demoparser2 import DemoParser
 
 ME_DEFAULT = None  # defaults to the Steam account logged in on this PC (config.logged_in_account)
 TICKRATE = 64
@@ -165,8 +164,16 @@ def _events(p, me, round_of):
     return deaths, hurt, myfires, blind
 
 
+# the events analyze() reads, in one pass of the demo (onepass.py, 15/10: 28 reads of the demo before)
+EVENTS = {"round_freeze_end": ((), ()), "buytime_ended": ((), ()), "round_poststart": ((), ()),
+          "round_officially_ended": ((), ()), "cs_win_panel_match": ((), ()),
+          "player_death": (("X", "Y", "last_place_name"), ("total_rounds_played",)), "player_hurt": ((), ()),
+          "weapon_fire": (("velocity_X", "velocity_Y"), ()), "player_blind": ((), ())}
+
+
 def analyze(path, me):
-    p = DemoParser(path)
+    from wily.demos import onepass
+    p = onepass.Parser(path, EVENTS)
     header = p.parse_header()
     players = p.parse_player_info()
     players["steamid"] = players["steamid"].map(sid)
@@ -194,6 +201,10 @@ def analyze(path, me):
     my_side_rounds = Counter()
     score = {"me": 0, "them": 0}
     foes_of = {}   # round -> the enemies' SteamIDs (the pro insights count your flashes on them only)
+
+    # your inventory just before each of your deaths, in one read of the demo (one read per death before, 15/10)
+    mine = deaths[deaths.user_steamid == me]
+    inv_all = p.parse_ticks(["inventory"], ticks=sorted({int(t) - 2 for t in mine.tick}), players=[me]) if len(mine) else None
 
     for idx, r in enumerate(rounds):
         myteam = team_of(me, r)
@@ -287,7 +298,7 @@ def analyze(path, me):
         unused_at_death = []
         if d:
             dt_tick = int(my_death.iloc[0].tick)
-            inv_death = p.parse_ticks(["inventory"], ticks=[dt_tick - 2], players=[me])
+            inv_death = inv_all[inv_all.tick == dt_tick - 2] if inv_all is not None and len(inv_all) else []
             if len(inv_death):
                 unused_at_death = [x for x in inv_death.iloc[0]["inventory"] if x in GRENADE_INV]
             death_info["unused_grenades"] = unused_at_death

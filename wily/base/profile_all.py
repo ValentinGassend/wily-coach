@@ -20,7 +20,7 @@ def candidates(min_demos):
     c, names = Counter(), {}
     for mid in os.listdir(config.DEEP):
         f = os.path.join(config.DEEP, mid, "samples.parquet")
-        if not os.path.exists(f) or not os.path.exists(os.path.join(config.CACHE, f"{mid}.dem")):
+        if not os.path.exists(f) or not config.has_demo(mid):
             continue
         s = pd.read_parquet(f, columns=["steamid", "name"]).drop_duplicates("steamid")
         for sid, n in zip(s.steamid, s.name):
