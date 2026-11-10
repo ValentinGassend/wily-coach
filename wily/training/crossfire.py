@@ -209,10 +209,32 @@ SPRAY_MAX = 600   # 27/10, his order "limiter la distance de l'exercice de spray
 # spray's control no longer the point past 600 u
 
 
-def _near_pairs(sp):
+SEEN_SLACK = 40   # 10/11: the spray starts a moment after the first one is seen, a few steps nearer
+
+
+def _near_pairs(sp, mp=None):
     """The spot's spray pairs at short and mid range (SPRAY_MAX at most; 14/10 already: "de Pit jusqu'à Library c'est
-    trop long"), the farther ones left out."""
-    return [pr for pr in sp.get("pairs") or [] if all(math.dist(sp["pos"][:2], q["end"][:2]) < SPRAY_MAX for q in pr)]
+    trop long"), the farther ones left out: where their ways end, and where the holder first sees each of the two
+    (tools/crossfire_check.py; 10/11, round 28: Inferno's T Apps sprayed at 600-711 u, its far one in plain sight down its
+    corridor from 760 u while its way ends at 522 u), and clear of cover where they stop (pair_ok). A pair one of whose two
+    is never seen is left out too (the drill would wait for it). All the pairs within SPRAY_MAX by their ends while that
+    spot is not traced."""
+    near = [i for i, pr in enumerate(sp.get("pairs") or []) if all(math.dist(sp["pos"][:2], q["end"][:2]) < SPRAY_MAX for q in pr)]
+    seen = None
+    if mp:
+        book = config.read_json(os.path.join(config.HERE, "resources", "crossfire_checked.json"), {}) or {}
+        rec = book.get(f"{mp}|{round(sp['pos'][0])}|{round(sp['pos'][1])}|{round(sp['pos'][2])}") or {}
+        if rec.get("pairs") is not None and len(rec["pairs"]) == len(sp.get("pairs") or []):
+            seen = rec["pairs"]
+    return [sp["pairs"][i] for i in near if seen is None or seen[i] is None or pair_ok(seen[i])]
+
+
+def pair_ok(rec):
+    """A spray pair as tools/crossfire_check.py traced it: both seen first within SPRAY_MAX + SEEN_SLACK, both with head
+    and chest in the holder's line where they stop (10/11, round 28: Vertigo's Side stopped out of his sight, 2 of 3
+    bullets into the wall; Train's A Site with its chest behind the train's edge)."""
+    seen_ok = all(d is not None and d <= SPRAY_MAX + SEEN_SLACK for d in rec.get("seen") or [None])
+    return seen_ok and all(rec.get("open") or [False])
 
 
 def level_of(sid):
@@ -291,7 +313,7 @@ def drills(sid, mp, secs, guns, rifle, items=None, nsess=0):
         k += 1
         cands = by_side[side]
         if v == "spray":
-            cands = [x for x in cands if _near_pairs(x)]
+            cands = [x for x in cands if _near_pairs(x, mp)]
         elif v == "peek":   # you come from where its holder does not see you (tools/crossfire_check.py)
             cands = [x for x in cands if _hidden(mp, x)]
         else:   # a hold: 3 real peeks at least whose start you do not see from the spot (tools/crossfire_check.py)
@@ -351,8 +373,8 @@ def drills(sid, mp, secs, guns, rifle, items=None, nsess=0):
                      tracks=[{"zone": p["zone"], "path": p["path"]} for p in hid])
         else:   # the pairs' two enemies and their real peeks, in the same order
             d.update(me={"pos": sp["pos"], "ang": sp["ang"]},
-                     bots=[{"pos": q["end"], "ang": [0, _bearing(q["end"], sp["pos"])], "zone": zone} for pair in _near_pairs(sp) for q in pair],
-                     tracks=[{"zone": zone, "path": q["path"]} for pair in _near_pairs(sp) for q in pair])
+                     bots=[{"pos": q["end"], "ang": [0, _bearing(q["end"], sp["pos"])], "zone": zone} for pair in _near_pairs(sp, mp) for q in pair],
+                     tracks=[{"zone": zone, "path": q["path"]} for pair in _near_pairs(sp, mp) for q in pair])
         out.append(d)
         total += SECS[v]
     # 14/10, the user: "mets tout le travail de spray ensemble, tout le travail de peek ensemble, tout le hold the angle
