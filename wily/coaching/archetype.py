@@ -122,6 +122,16 @@ def pct(sorted_vals, v):
     return float(np.searchsorted(sorted_vals, v, side="right") / len(sorted_vals) * 100)
 
 
+def _pcts(sorted_vals, col):
+    """pct() of every value of a column: a list of floats and None."""
+    if not len(sorted_vals):
+        return [None] * len(col)
+    na = col.isna().to_numpy()
+    v = col.to_numpy(dtype=float, na_value=np.nan)
+    p = np.searchsorted(sorted_vals, v, side="right") / len(sorted_vals) * 100
+    return [None if n else float(x) for n, x in zip(na, p)]
+
+
 def scores(P):
     """Role scores (0-100) from percentiles P (dict metric -> percentile)."""
     p = lambda k, inv=False: (100 - P[k] if inv else P[k]) if P.get(k) is not None else 50
@@ -162,9 +172,10 @@ def reference():
         T = pct_table(ref, cols)
         # archetype of every reference player, to compare a player with his peers
         roles = []
-        for sid, r in ref.iterrows():
-            P = {c: pct(T[c], r[c]) for c in cols}
-            roles.append(role_of(r.to_dict(), P, damp_awp(scores(P), r["awp_share"])))
+        PC = {c: _pcts(T[c], ref[c]) for c in cols}   # 16/10: each column at once, the same numbers as pct()
+        for i, r in enumerate(ref.to_dict("records")):
+            P = {c: PC[c][i] for c in cols}
+            roles.append(role_of(r, P, damp_awp(scores(P), r["awp_share"])))
         ref["role"] = roles
         _CACHE["ref"] = (df, agg, ref, T, cols)
     return _CACHE["ref"]

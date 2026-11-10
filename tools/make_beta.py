@@ -450,7 +450,7 @@ With this zip instead:
 2. Double-click "Wily.bat". I open in your browser at http://127.0.0.1:8765
    (Windows may ask to confirm the first time: the app is not signed yet.)
 3. My first launch shows three steps: your Steam account (found on this PC), CS2 connected (game detection, and one
-   launch option to paste in Steam: CS2 > Properties > Launch options:  -condebug +exec coach_binds ), your match
+   launch option to paste in Steam: CS2 > Properties > Launch options:  -condebug +exec wily_bind ), your match
    history code (from Steam's help page; no Steam Web API key needed: Wily's site asks Steam, keeping nothing).
 4. Prepare > Warm-up: the training server installs itself the first time (no extra space: links to the game's files).
 

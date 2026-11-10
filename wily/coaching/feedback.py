@@ -15,7 +15,7 @@ import secrets
 import time
 
 from wily.core import config
-from wily.core.i18n import tr, trn
+from wily.core.i18n import num, tr, trn
 
 STATE_F = os.path.join(config.OUT, "feedback_state.json")
 FRESH = 3 * 3600   # a warm-up or a match older than that: not asked any more
@@ -96,7 +96,7 @@ def pending():
     lt = last_training()
     if lt and lt["id"] not in asked and now - lt["t"] < FRESH and lt["drills"] >= 3:
         return {"kind": "training", "id": lt["id"], "title": tr("How was this warm-up?"),
-                "summary": tr("{a}/{b} drills passed · {p} pts", a=lt["ok"], b=lt["drills"], p=f"{lt['points']:,}")}
+                "summary": tr("{a}/{b} drills passed · {p} pts", a=lt["ok"], b=lt["drills"], p=num(lt['points']))}
     lv = last_live()
     if lv and lv["id"] not in asked and lv["rounds"] >= 8 and FRESH > now - lv["last"] > 120 and not config.in_match():
         tr_on = lt and abs(lt["t"] - lv["last"]) < 600   # the training server's own rounds (a warm-up shows in game too)

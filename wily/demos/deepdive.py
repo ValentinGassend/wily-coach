@@ -254,13 +254,13 @@ def zones_vs_pros(steamid, my_matches):
 def run(steamid):
     steamid = int(steamid)
     pdir = config.player_dir(steamid)
-    my_matches = [m for m in os.listdir(os.path.join(pdir, "matches")) if os.path.exists(os.path.join(config.CACHE, f"{m}.dem"))
+    my_matches = [m for m in os.listdir(os.path.join(pdir, "matches")) if config.has_demo(m)
                   and os.path.exists(os.path.join(config.DEEP, m, "meta.json"))]
     E, Dd = [], []
     os.makedirs(os.path.join(pdir, "replays"), exist_ok=True)
     for mid in my_matches:
         print(f"[{mid}] visibility and replay", flush=True)
-        e, d = engagements(os.path.join(config.CACHE, f"{mid}.dem"))
+        e, d = engagements(config.demo(mid))
         E.append(e.assign(match=mid))
         Dd.append(d.assign(match=mid))
         json.dump(replay(mid), open(os.path.join(pdir, "replays", f"{mid}.json"), "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ":"))

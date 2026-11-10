@@ -27,7 +27,7 @@ V = 1
 def demos(mp, n=PER_MAP):
     from wily.insights import tside
     ds = tside._map_dirs().get(mp, [])
-    ds = [os.path.basename(d) for d in ds if os.path.exists(os.path.join(config.CACHE, os.path.basename(d) + ".dem"))]
+    ds = [os.path.basename(d) for d in ds if config.has_demo(os.path.basename(d))]
     return sorted(ds, key=lambda d: -int(d))[:n]
 
 
@@ -58,7 +58,7 @@ def scan_demo(mid, src=None):
     if got:
         return got
     from demoparser2 import DemoParser
-    p = DemoParser(src or os.path.join(config.CACHE, mid + ".dem"))
+    p = DemoParser(src or config.demo(mid))
     T = p.parse_ticks(["CCSPlayerPawn.m_hGroundEntity", "CCSPlayerController.m_hPlayerPawn", "X", "Y", "Z", "yaw", "pitch", "team_num",
                        "is_alive", "last_place_name", "total_rounds_played", "ducking"], ticks=list(range(0, 700000, STEP)))
     T = T.rename(columns={"CCSPlayerPawn.m_hGroundEntity": "g", "CCSPlayerController.m_hPlayerPawn": "pawn"})
@@ -168,7 +168,7 @@ def run(maps=None, workers=3, per_map=PER_MAP, low=True, log=print):
 
             def copier():
                 for mid in ds:
-                    src, dst = os.path.join(config.CACHE, mid + ".dem"), os.path.join(TMP, mid + ".dem")
+                    src, dst = config.demo(mid), os.path.join(TMP, mid + ".dem")
                     try:
                         shutil.copyfile(src, dst)
                     except OSError:

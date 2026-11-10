@@ -70,7 +70,7 @@ def _insights_of(sid, st):
         return pi
     from wily.core import config
     mid = str((st.get("match") or {}).get("match_id") or "")
-    dem = os.path.join(config.CACHE, f"{mid}.dem")
+    dem = config.demo(mid)
     if not mid or not os.path.exists(dem):
         return None
     try:
@@ -303,12 +303,15 @@ def _md(d):
     return i18n.day_month(d)
 
 
-PERIODS = {"7d": N_("the last 7 days"), "week": N_("this week"), "month": N_("this month"), "30d": N_("the last 30 days")}
+PERIODS = {"7d": N_("the last 7 days"), "week": N_("this week"), "month": N_("this month"), "30d": N_("the last 30 days"),
+           "all": N_("all your matches")}   # 16/10, the user: "rajoute un filtre pour all"
 
 
 def _window(rows, period, now=None):
     """The matches of a period (rows sorted by time): the last session, or a span of the calendar until now."""
     now = now or dt.datetime.now()
+    if period == "all":   # every analyzed match: nothing before it to compare with
+        return list(rows)
     if period == "7d":
         start = now - dt.timedelta(days=7)
     elif period == "30d":
@@ -354,7 +357,7 @@ def build(sid, stats, mid_rows, ctx, exps, adv, mb=None, period="session"):
         if not recent or len(recent) < 2:
             return None
         before = [r for r in rows if r["time"] < recent[0]["time"]][-max(12, len(recent)):]
-        label = f"{PERIODS[period]} ({len(recent)} games)"
+        label = trn(len(recent), "{period} ({n} game)", "{period} ({n} games)", period=tr(PERIODS[period]))   # 16/10: was left in English
     else:
         # recent window: the last session when it has 2 games or more, else the last 3 matches
         last = rows[-1]
@@ -506,7 +509,7 @@ def write_periods(sid):
                 mid_rows[st["match"]["match_id"]] = r.iloc[0].to_dict()
     P = periods(sid, stats, mid_rows, PL.get("context"), PL.get("experiments"), adv, (PL.get("mid") or {}).get("bench"))
     adv.setdefault("plan", {})["review_periods"] = P
-    config.write_json(f, adv, indent=1, default=str)
+    config.write_json(f, adv, separators=(",", ":"), default=str)
     build_app.write_player(str(sid))
     return {k: (v or {}).get("label") for k, v in P.items()}
 

@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from wily.core import config
+from wily.core import ledger
 
 OUT = os.path.join(config.OUT, "style")
 AWP = {"awp", "ssg08"}
@@ -121,8 +122,8 @@ def extract(mid, deep_dir=None, out_dir=None):
 
 
 def run_all(workers=12, force=False):
-    todo = [m for m in os.listdir(config.DEEP) if os.path.exists(os.path.join(config.DEEP, m, "meta.json"))
-            and (force or not os.path.exists(os.path.join(OUT, f"{m}.parquet")))]
+    have = set() if force else ledger.names(OUT)   # 15/10: one read of the folder, not a file check per match
+    todo = [m for m in os.listdir(config.DEEP) if m not in have and os.path.exists(os.path.join(config.DEEP, m, "meta.json"))]
     if not todo:
         return 0
     if len(todo) == 1 or workers == 1:
@@ -139,8 +140,8 @@ def run_all(workers=12, force=False):
 
 
 def load():
-    fs = [os.path.join(OUT, f) for f in os.listdir(OUT) if f.endswith(".parquet")] if os.path.exists(OUT) else []
-    return pd.concat([pd.read_parquet(f) for f in fs], ignore_index=True) if fs else pd.DataFrame()
+    """Every match's styles as one (kept consolidated: only the new matches' files are read, ledger.py)."""
+    return ledger.stacked(OUT, "style")
 
 
 if __name__ == "__main__":

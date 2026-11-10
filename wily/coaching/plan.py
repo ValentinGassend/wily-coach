@@ -75,7 +75,8 @@ def level(adv, sid=None):
         exp = "veteran" if hours >= 1500 else "regular" if hours >= 300 else "improving"
     else:
         exp = "veteran" if total >= 400 or (yr and dt.date.today().year - yr >= 7 and total >= 150) else "regular" if total >= 100 else "improving"
-    return {"key": lv["key"] if lv else None, "name": lv["name"] if lv else None, "focus": lv["focus"] if lv else [],
+    # the level and its focus in your language (21/10, Profile in French: "NIVEAU 15,000 TO 20,000")
+    return {"key": lv["key"] if lv else None, "name": tr(lv["name"]) if lv else None, "focus": [tr(f) for f in lv["focus"]] if lv else [],
             "rating": rating, "season": prem["season"] if prem else None, "comp": comp, "wins": wins, "premier_wins": prem_w,
             "since": yr, "experience": exp, "hours": hours, "two_weeks_h": (pt or {}).get("two_weeks_h"), "playtime_source": (pt or {}).get("source"),
             "src": K.src(*K.LEVEL_SRC)}
@@ -454,7 +455,26 @@ def _carryover(sid):
                      "kind": "bad" if last["perf"] <= lo else "good" if last["perf"] >= hi else "average"}}
 
 
-def build(steamid, adv, cross=None, deep=None, light=False):
+def buys_args(cross):
+    """(the maps, your duels per map, side and zone) buys.adapted() reads."""
+    maps = sorted({m["map"] for m in (cross or {}).get("maps", [])})
+    zd = {(m["map"], side): {z["name"]: (z["k"], z["d"]) for z in S.get("zones", [])}
+          for m in (cross or {}).get("maps", []) for side, S in m.get("sides", {}).items()}
+    return sorted(set(PREMIER) | set(maps)), zd
+
+
+def bg_buys(sid, arch, cross):
+    """buys.adapted() in a worker process beside the rest of the plan (16/10: its 4 s were a third of the plan), your
+    weapons read there too."""
+    from wily.app import pipeline
+    from wily.insights import buys
+    from wily.insights import weapons
+    maps, zd = buys_args(cross)
+    return buys.adapted(sid, maps, arch, zd, weapons.player(sid, pipeline.player_matches(sid)))
+
+
+def build(steamid, adv, cross=None, deep=None, light=False, bg=None):
+    """bg: {"buys": a future of bg_buys()} when a worker computes them."""
     from wily.coaching import context
     from wily.coaching import experiments
     sid = int(steamid)
@@ -481,6 +501,18 @@ def build(steamid, adv, cross=None, deep=None, light=False):
     from wily.app import pipeline
     from wily.insights import midround
     from wily.insights import weapons
+    import threading
+    facts = {}
+
+    def _facts():   # the enemies' Steam bans are a network request: asked from the start, beside the rest (16/10)
+        try:
+            from wily.demos import matchfacts
+            matchfacts.run(sid, 10)
+            facts["v"] = matchfacts.summary(sid)
+        except Exception as e:
+            facts["e"] = e
+    fth = threading.Thread(target=_facts, daemon=True, name="plan-facts")
+    fth.start()
     mids = pipeline.player_matches(sid)
     mb = midround.bench(sid)
     bad, good = mid_findings(mb)
@@ -510,9 +542,12 @@ def build(steamid, adv, cross=None, deep=None, light=False):
     plan["weapons"] = wp
     try:
         from wily.insights import buys
-        zd = {(m["map"], side): {z["name"]: (z["k"], z["d"]) for z in S.get("zones", [])}
-              for m in (cross or {}).get("maps", []) for side, S in m.get("sides", {}).items()}
-        plan["buys"] = buys.adapted(sid, sorted(set(PREMIER) | set(maps)), adv.get("archetype"), zd, wp)
+        fut = (bg or {}).get("buys")
+        if fut is not None:
+            plan["buys"] = None   # its place among the plan's keys: the worker's result read at the end
+        else:
+            mm, zd = buys_args(cross)
+            plan["buys"] = buys.adapted(sid, mm, adv.get("archetype"), zd, wp)
     except Exception as e:
         _miss(plan, "buys by round type", e)
     try:
@@ -585,12 +620,11 @@ def build(steamid, adv, cross=None, deep=None, light=False):
         plan["hostage"] = hostage.summary()
     except Exception as e:
         _miss(plan, "hostage maps", e)
-    try:   # from the demos: blocks, flashes, team flashes, odd kills of the enemies and their Steam bans
-        from wily.demos import matchfacts
-        matchfacts.run(sid, 10)
-        plan["facts"] = matchfacts.summary(sid)
-    except Exception as e:
-        _miss(plan, "match facts", e)
+    fth.join()   # from the demos: blocks, flashes, team flashes, odd kills of the enemies and their Steam bans
+    if "e" in facts:
+        _miss(plan, "match facts", facts["e"])
+    else:
+        plan["facts"] = facts["v"]
     try:   # the analyst's reads over all your matches, against the base and the pros (Full analysis)
         from wily.coaching import review
         plan["reads"] = {"meta": K.reads_meta(), "all": review.reads(sid, stats, mb, adv.get("bench"), catch_up=False)}
@@ -608,4 +642,17 @@ def build(steamid, adv, cross=None, deep=None, light=False):
     except Exception as e:
         plan["review_periods"] = None
         _miss(plan, "review periods", e)
+    fut = (bg or {}).get("buys")
+    if fut is not None:
+        from concurrent.futures.process import BrokenProcessPool
+        from wily.insights import buys
+        try:
+            try:
+                plan["buys"] = fut.result()
+            except BrokenProcessPool:   # its process stopped: here, in turn
+                mm, zd = buys_args(cross)
+                plan["buys"] = buys.adapted(sid, mm, adv.get("archetype"), zd, wp)
+        except Exception as e:
+            plan.pop("buys", None)
+            _miss(plan, "buys by round type", e)
     return plan

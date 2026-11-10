@@ -346,7 +346,7 @@ function micBtn(){const g=gsiLast||{};if(!D.local)return "";
   // what you hear (your teammates' voices, the game): only once every teammate said yes, for this match only (04/10)
   const team=!g.map||g.practice?"":g.team_rec==="on"?`<button type="button" class="close teamchip on" data-team="off" title="${tl("What you hear (your teammates' voices and the game) is recorded for this match: your team agreed. Click to stop.")}">● ${tl("Team")}</button>`
     :g.team_rec==="pending"?`<button type="button" class="close teamchip" data-team="off" title="${tl("Your team agreed: what you hear is recorded with your microphone from the start of the match. Click to cancel.")}">● ${tl("Team · at the start")}</button>`
-    :`<button type="button" class="close teamchip" data-team="on" title="${tl("My team agreed: record what I hear. Only once every teammate has said yes: their voices are recorded too (in France, art. 226-1), for this match only, to see afterwards what you did after their calls. Numpad / in game does the same (exec coach_binds once).")}">${tl("Team")} ○</button>`;
+    :`<button type="button" class="close teamchip" data-team="on" title="${tl("My team agreed: record what I hear. Only once every teammate has said yes: their voices are recorded too (in France, art. 226-1), for this match only, to see afterwards what you did after their calls. Numpad / in game does the same (exec wily_bind once).")}">${tl("Team")} ○</button>`;
   if(g.mic)return `${g.mic_silent?`<span class="pill weak" title="${tl("No sound for a minute")}">● ${tl("Mic silent: {link}",{link:`<a href="#settings" style="color:inherit">${tl("check the microphone")}</a>`})}</span>`:`<span class="pill weak" title="${tl("Your microphone is recorded to analyze your calls")}">● ${tl("Mic")}</span>`}${g.mic_auto?"":`<button type="button" class="close" data-mic="stop">${tl("Stop recording")}</button>`}${team}`;
   return (g.mic_auto?"":`<button type="button" class="close" data-mic="start" title="${tl("Records your microphone to analyze your calls after the match")}">${tl("Record my calls")}</button>`)+team}
 // the focus of the week, small in the live bar: what you work on, never more than one line (05/10)
@@ -359,14 +359,26 @@ function liveBar(){if(!D.local)return "";const g=gsiLast,focus=document.body.cla
   const st=gsiStatus;
   return `<div class="live"><span class="dot" aria-hidden="true"></span>${st&&st.installed?`<span>${tl("I'm ready. Start your match: I'll follow it from here.")}</span>`
     :`<span>${tl("Pick your map and side, or {link} and I'll follow your match on my own.",{link:`<a href="#settings" style="color:var(--ct)">${tl("turn on game detection")}</a>`})}</span>`}<span class="sp">${micBtn()}${fb}</span></div>`}
+// the training server's step-by-step drill, its four toggles live (23/10, the user: "afficher les 4 indicateurs du pas à
+// pas aussi dans la page Live"): the plugin's coach/steps_live.json through /api/train/steps, three times a second while
+// you are on it
+let stepsLive=null,stepsRun=false;
+function stepsCard(){const s=stepsLive;if(!s||!s.drill)return "";
+  const names=[tl("the spot"),tl("the aim"),tl("the clicks"),tl("the move")],lock=!(s.spot&&s.aim)&&!s.armed;
+  const on=[s.spot||s.armed,s.aim||s.armed,!!s.armed,!!(s.thrown&&!s.move)];
+  const row=names.map((n,i)=>`<span class="stp${on[i]?" on":i===2&&lock?" lock":i===s.step?" now":""}">${on[i]?"✔":i===2&&lock?IC("lock"):i+1} ${n}</span>`).join("");
+  return `<div class="steps-live"><b>${tl("Step by step")}</b> <span class="mini">${tl("throw {i}/3",{i:s.try||1})}</span><div class="stps">${row}</div>
+   <span class="mini">${tl("{d} u from the spot",{d:Math.round(s.dist||0)})} · ${Number(s.aim_off||0).toFixed(1)}°${s.move?` · ${esc(s.move)}`:""}</span></div>`}
+async function stepsPoll(){if(!D.local||S.view!=="ingame"||!(gsiLast&&gsiLast.practice)){stepsRun=false;stepsLive=null;return}
+  try{const j=await (await fetch("/api/train/steps")).json();stepsLive=j&&j.drill?j:null;const el=$("#steps-live");if(el)el.innerHTML=stepsCard()}catch(e){}
+  setTimeout(stepsPoll,330)}
+function stepsKick(){if(stepsRun)return;stepsRun=true;stepsPoll()}
 async function gsiPoll(){clearTimeout(gsiTimer);if(!D.local||S.view!=="ingame")return;
   try{const g=await (await fetch("/api/gsi/state")).json();const sig=x=>x?[x.map,x.side,x.round,x.round_phase,x.money,x.bomb,x.age!=null&&x.age<75,JSON.stringify(x.hist||{}),JSON.stringify(x.nades||{}),x.health===0,x.elapsed==null?"":Math.floor(x.elapsed/5),x.pos?x.pos.map(c=>Math.round(c/100)).join(","):"",x.call?x.call.t:"",x.tdir?[x.tdir.round,x.tdir.dir,x.tdir.via,x.tdir.tempo].join(","):"",x.ping?x.ping.t:"",x.wily?x.wily.t:"",JSON.stringify(x.wily_match||{})].join("|"):"";
     const before=sig(gsiLast)+(gsiLast&&gsiLast.mic);gsiLast=g&&Object.keys(g).length?g:null;
+    if(gsiLast&&gsiLast.practice)stepsKick();
     if(gsiLast&&S.player&&D.players[S.player]&&typeof liveLog==="function")liveLog(D.players[S.player],gsiLast);   // checked after the match
     if(gsiLast&&S.player===D.own&&D.players[S.player]&&typeof pathCalls==="function")pathCalls(D.players[S.player],gsiLast);   // numpad 1-2-3
-    if(gsiLast&&S.player===D.own&&D.players[S.player]&&typeof coachVoice==="function")coachVoice(D.players[S.player],gsiLast);   // the coach's voice at the buy time
-    if(gsiLast&&S.player===D.own&&typeof coachInfo==="function")coachInfo(gsiLast);   // "l'info !" when you die
-    if(gsiLast&&S.player===D.own&&typeof wilyVoice==="function")wilyVoice(gsiLast);   // Wily answers what you asked it (06/10)
     if(sig(gsiLast)+(gsiLast&&gsiLast.mic)!==before&&S.view==="ingame"&&S.player&&D.players[S.player])renderIngame()}catch(e){}
   gsiTimer=setTimeout(gsiPoll,1000)}   // the game sends every 0.25 s
 
@@ -494,7 +506,7 @@ function nowPanel(p,g,following,opt){const noBuy=opt&&opt.noBuy;
      <span class="mini">${gsiFresh()?tl("This page shows your pick, not the live game."):tl("As soon as CS2 sends the round, this panel shows what matters now: what to buy, where the Ts are likely to go, what to do with your utility.")}</span>
      ${M?`<span class="mini">${tl("Ts on {map}: pistol round A {pa}% / B {pb}%, full buys A {fa}% / B {fb}%.",{map:MAPN(S.map),pa:(M.ctx.pistol||M.all).A,pb:(M.ctx.pistol||M.all).B,fa:(M.ctx.full||M.all).A,fb:(M.ctx.full||M.all).B})}</span>`:""}</div>`}
   const ph=g.round_phase,ct=g.side==="CT",ev=evFor(g),out=[];
-  if(g.practice)return `<div class="now-empty"><b>${tl("Practice server")}</b><span class="mini">${tl("More money or a longer round than a real match allows: the live advice (buys, T read) and the automatic recording are off here. The radar, your positions and grenades still work: pick them below.")}</span></div>`;
+  if(g.practice)return `<div id="steps-live">${stepsCard()}</div><div class="now-empty"><b>${tl("Practice server")}</b><span class="mini">${tl("More money or a longer round than a real match allows: the live advice (buys, T read) and the automatic recording are off here. The radar, your positions and grenades still work: pick them below.")}</span></div>`;
   if(ph==="freezetime"){if(!noBuy)out.push(buyCard(p,g));if(ct&&(g.round===1||g.round===13))out.push(pistolCT(p,g));out.push(situationCard(p,g));if(ct)out.push(tsideLive(p,g));else out.push(vDir(p,g)||tPlanLive(p,g))}
   else if(ph==="live"){
     if(g.bomb==="planted"){const site=ev.site||((typeof autoSite==="function"&&autoSite(p,g))||{}).site||null;
@@ -544,7 +556,7 @@ function renderIngame(){
     const side=store("igside")!==false,toast=buy?`<div class="ig-toast" role="status" aria-live="polite"><button type="button" class="close tx" id="toastx" aria-label="${tl("Hide the buy advice")}">✕</button>${buy}</div>`:"";
     v.innerHTML=`<div class="ig-full${side?"":" noside"}">
      <div class="ig-map">${radarHTML}</div>
-     <div class="ig-hud">${liveBar()}<span class="hudbtns"><button type="button" class="close" id="sidebtn" aria-pressed="${side}">${side?"◀ "+tl("Hide panel"):"▶ "+tl("Show panel")}</button><button type="button" class="close" id="fsbtn">${document.fullscreenElement?tl("Exit full screen"):"⛶ "+tl("Full screen")}</button><button type="button" class="close" id="igfull">${tl("Normal view")}</button></span></div>
+     <div class="ig-hud">${liveBar()}<span class="hudbtns"><button type="button" class="close" id="sidebtn" aria-pressed="${side}">${side?"◀ "+tl("Hide panel"):"▶ "+tl("Show panel")}</button><button type="button" class="close" id="fsbtn">${document.fullscreenElement?tl("Exit full screen"):IC("maximize")+" "+tl("Full screen")}</button><button type="button" class="close" id="igfull">${tl("Normal view")}</button></span></div>
      ${side?"":toast}
      <div class="now ig-side" id="now">${side?toast:""}${nowVisual(p,gsiLast,following)}</div></div>`}
   else if(D.local&&!(live&&gsiLast&&gsiLast.map))v.innerHTML=`${missNote(p)}${igWaiting()}`;   // no match: no map to browse (07/10, Prepare has the sheets), no status bar
@@ -555,7 +567,7 @@ function renderIngame(){
     <div class="btns side big" role="group" aria-label="${tl("Side")}"><button type="button" data-side="T" aria-pressed="${S.side==="T"}">T · ${(S.map?roleOf(S.map,"T"):"attack")==="attack"?tl("attack"):tl("defense")}</button><button type="button" data-side="CT" aria-pressed="${S.side==="CT"}">CT · ${(S.map?roleOf(S.map,"CT"):"defense")==="attack"?tl("attack"):tl("defense")}</button></div>
     ${D.local?"":`<button type="button" class="close" id="focus">${focus?tl("Exit second-screen mode"):tl("Second-screen mode")}</button>`}
    </div>`}
-   ${following?`<div class="ig-fullbtn"><button type="button" class="close" id="igfull">⛶ ${tl("Full map")}</button></div>`:""}
+   ${following?`<div class="ig-fullbtn"><button type="button" class="close" id="igfull">${IC("maximize")} ${tl("Full map")}</button></div>`:""}
    <div class="ig2"><div class="now" id="now">${nowPanel(p,gsiLast,following)}</div>
     <div class="igcol ig-radar">${radarHTML}</div></div>
    ${tabs(v,tl("Map guide"),TABS,tab)}

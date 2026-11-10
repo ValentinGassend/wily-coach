@@ -31,7 +31,7 @@ def _demos(mp):
     if len(done) >= PER_MAP:
         return done
     ds = tside._map_dirs().get(mp, [])
-    ds = [d for d in ds if os.path.exists(os.path.join(config.CACHE, os.path.basename(d) + ".dem"))]
+    ds = [d for d in ds if config.has_demo(os.path.basename(d))]
     return sorted(ds, key=lambda d: -int(os.path.basename(d)))[:PER_MAP]
 
 
@@ -45,7 +45,7 @@ def _kills(mid):
                              "attacker_last_place_name": k.aplace, "user_X": k.vx, "user_Y": k.vy, "user_Z": k.vz,
                              "user_last_place_name": k.vplace, "match": mid})
     from demoparser2 import DemoParser
-    p = DemoParser(os.path.join(config.CACHE, mid + ".dem"))
+    p = DemoParser(config.demo(mid))
     k = p.parse_event("player_death", player=["X", "Y", "Z", "pitch", "yaw", "team_num", "last_place_name"])
     if not isinstance(k, pd.DataFrame) or not len(k) or "penetrated" not in k:
         return pd.DataFrame()

@@ -1,51 +1,25 @@
 
 // ---------- view: review (after the session, or the next day) ----------
+// its four numbers only when one of them exists (03/11, the interface's review: four "—" for a match not analyzed yet, its
+// note above already saying so)
 function callsBlock(PL){const C=PL.calls||[];if(!C.length)return D.local&&P()&&P().steamid===D.own?`<h3>${tl("Your calls")}</h3><p class="note">${tl("No recording yet: turn on \"Your calls\" in <a href=\"#settings\" style=\"color:var(--ct)\">Settings</a>, play, and I analyze your communication after the match.")}</p>`:"";
   const a=C[0],pct=(x,n)=>n?Math.round(100*x/n)+"%":"—";
   // each number once (07/10): its advice in its own tile, the other advice below
   // tip_k: each tip's English (the tips themselves may be translated, 13/10); an older analysis: the tips are English
   const TK=a.tip_k||a.tips||[],TIP_RX=[/deaths out of/,/say where AND how many/,/grenades called out of/,/teammate clutch/],tipFor=(rx,t)=>TK.some(x=>rx.test(x))?`<em class="gtip">${esc(t)}</em>`:"";
   const rest=(a.tips||[]).filter((x,i)=>{const k=TK[i]||x;return !TIP_RX.some(rx=>rx.test(k))&&!/^Your calls are clean/.test(k)});
-  const src=((PL.phases||[]).flatMap(ph=>ph.items).find(i=>i.id==="info_calls")||{}).src;
   const sp=(a.speech_s||0)<60?`${Math.round(a.speech_s||0)} s`:tl("{n} min",{n:Math.round(a.speech_s/60)});
   return `<h3>${tl("Your calls")}</h3>
-   <p class="note">${a.map?MAPN(a.map):tl("Match")} · ${fmtDate(a.start)} · ${tl("{n} phrases, {t} of speech",{n:a.utterances,t:sp})}${a.match?"":" · "+tl("match not analyzed yet: update your profile")}${a.aligned?"":" · "+tl("without game detection, calls aren't lined up with rounds")}.</p>
-   <div class="gauge">
+   <p class="note">${a.map?MAPN(a.map):tl("Match")} · ${fmtDate(a.start)} · ${tln(a.utterances,"{n} phrase, {t} of speech","{n} phrases, {t} of speech",{t:sp})}${a.match?"":" · "+tl("match not analyzed yet: update your profile")}${a.aligned?"":" · "+tl("without game detection, calls aren't lined up with rounds")}.</p>
+   ${(a.deaths||a.info||a.throws||a.clutch_talk_rounds)?`<div class="gauge">
     <div><b>${a.deaths?pct(a.deaths-a.silent_deaths,a.deaths):"—"}</b><span>${tl("of your deaths preceded by a call (10 s before)")}${a.deaths?" · "+tl("{a} of {b} without",{a:a.silent_deaths,b:a.deaths}):""}</span>${tipFor(/deaths out of/,tl("Call what you see before taking the duel, not after."))}</div>
     <div><b>${a.info?a.complete_share+"%":"—"}</b><span>${tl("of your calls say where and how many")}</span>${tipFor(/say where AND how many/,tl("'Two B, one tagged for 80' rather than 'they're B'."))}</div>
     <div><b>${a.throws?pct(a.announced,a.throws):"—"}</b><span>${tl("of your grenades called")}${a.throws?" · "+tl("{a} of {b}",{a:a.announced,b:a.throws}):""}</span>${tipFor(/grenades called out of/,tl("Say 'flash' before throwing it: your teammates turn away."))}</div>
-    <div><b>${a.clutch_talk_rounds}</b><span>${tln(a.clutch_talk_rounds,"teammate clutch where you talked","teammate clutches where you talked")}</span>${tipFor(/teammate clutch/,tl("One useful piece of info, then silence."))}</div></div>
+    <div><b>${a.clutch_talk_rounds}</b><span>${tln(a.clutch_talk_rounds,"teammate clutch where you talked","teammate clutches where you talked")}</span>${tipFor(/teammate clutch/,tl("One useful piece of info, then silence."))}</div></div>`:""}
    ${rest.length?`<ul class="pl-list">${rest.map(t=>`<li class="coach">${esc(t)}</li>`).join("")}</ul>`:""}
    ${a.examples.length?`<p class="note">${tl("Your best calls: {list}",{list:a.examples.map(x=>"“"+esc(x)+"”").join(" · ")})}</p>`:""}
-   ${heardBlock(C)}${teamCallsBlock(C)}
-   ${a.rounds.length?`<details><summary style="cursor:pointer">${tl("Your calls round by round")}</summary><div class="tbl" style="margin-top:8px"><table><thead><tr><th class="n">${tl("Round")}</th><th>${tl("What you said (seconds into the round)")}</th><th class="n">${tl("Died at")}</th></tr></thead><tbody>
-     ${a.rounds.map(r=>`<tr><td class="n">${r.round}</td><td class="wrap">${r.texts.length?r.texts.map(x=>`<span class="${x.kind==="tilt"?"bad":""}">${x.t} s: ${esc(x.text)}</span>`).join("<br>"):`<span class="note">${tl("nothing")}</span>`}</td><td class="n">${r.died_t==null?tl("alive"):Math.round(r.died_t)+" s"}</td></tr>`).join("")}</tbody></table></div></details>`:""}
-   ${srcLinks(src,true)}`}
-// what your team could hear (the demos' sounds and everyone's positions) and what you called of it (04/10)
-const SND={step:tl("running"),shot:tl("shots"),quiet:tl("silenced shots"),throw:tl("a grenade's pin"),reload:tl("a reload"),scope:tl("a scope"),plant:tl("the plant"),defuse:tl("the defuse")};
-const WHY={you_died:tl("you died right after"),enemy_died:tl("it died right after"),shared:tl("a teammate heard it too"),far:tl("far"),talking:tl("you were talking"),none:tl("nothing in the way")};
-const WHY_C={you_died:"var(--bad)",enemy_died:"var(--good)",shared:"var(--ct)",far:"var(--muted)",talking:"var(--flash)",none:"var(--t)"};
-function heardBlock(C){const H=C.filter(a=>a.heard&&a.heard.heard);if(!H.length)return "";
-  const pc=(x,n)=>n?Math.round(100*x/n)+"%":"—",S=k=>H.reduce((s,a)=>s+(a.heard[k]||0),0),SP=k=>H.reduce((s,a)=>[s[0]+((a.heard[k]||{}).n||0),s[1]+((a.heard[k]||{}).called||0)],[0,0]);
-  const callable=S("callable"),called=S("called"),alone=SP("alone"),shared=SP("shared"),far=SP("far"),near=SP("near"),fights=SP("fights");
-  const rs=H.map(a=>a.heard.react_s).filter(x=>x!=null).sort((x,y)=>x-y),react=rs.length?rs[Math.floor(rs.length/2)]:null;
-  const why=Object.keys(WHY).map(k=>({k,v:H.reduce((s,a)=>s+((a.heard.why_not||{})[k]||0),0)})),kinds={};
-  H.forEach(a=>Object.entries(a.heard.by_kind||{}).forEach(([k,v])=>{const o=kinds[k]||(kinds[k]=[0,0]);o[0]+=v.n;o[1]+=v.called}));
-  const h=H[0].heard,L=(h.list||[]);
-  return `<h3>${tl("What you heard, and what you called")} ${itip(tln(H.length,"From the demos of your last recorded match: where everyone was, the enemies' shots, reloads, scopes, the bomb, and their running (faster than walking). Rough distances (a running enemy within about 1,100 units, a shot 2,000), walls not counted. Your own fights apart: {f} sounds heard while you were shooting or being shot.","From the demos of your {n} last recorded matches: where everyone was, the enemies' shots, reloads, scopes, the bomb, and their running (faster than walking). Rough distances (a running enemy within about 1,100 units, a shot 2,000), walls not counted. Your own fights apart: {f} sounds heard while you were shooting or being shot.",{f:fights[0]}))}</h3>
-   <div class="gauge">
-    <div><b>${pc(called,callable)}</b><span>${tl("of the enemy sounds you heard called ({n}, outside your fights)",{n:callable})}</span></div>
-    <div><b>${pc(alone[1],alone[0])}</b><span>${tl("when only you could hear them ({n}) · {p} when a teammate could too",{n:alone[0],p:pc(shared[1],shared[0])})}</span></div>
-    <div><b>${react!=null?react+" s":"—"}</b><span>${tl("from hearing it to your call")}</span></div>
-    <div><b>${pc(S("right"),called)}</b><span>${tl("of these calls name the place")}</span></div></div>
-   <p>${tl("Close sounds: <b>{a}</b> called · far: <b>{b}</b>",{a:pc(near[1],near[0]),b:pc(far[1],far[0])})} · ${Object.entries(kinds).sort((x,y)=>y[1][0]-x[1][0]).slice(0,3).map(([k,v])=>`${SND[k]||k}: <b>${pc(v[1],v[0])}</b> (${v[0]})`).join(" · ")}</p>
-   ${callable-called?`<p class="note">${tl("The ones you did not call, and what was around them:")}</p>
-   <div class="fbar">${why.filter(x=>x.v>0).map(x=>`<i style="flex:${x.v};background:${WHY_C[x.k]}"><title>${WHY[x.k]}: ${x.v}</title></i>`).join("")}</div>
-   <div class="vleg">${why.filter(x=>x.v>0).map(x=>`<span><i style="background:${WHY_C[x.k]}"></i>${WHY[x.k]}: ${x.v}</span>`).join("")}</div>`:""}
-   ${(h.mates||[]).length?`<p class="note">${tl("Who else heard them ({match})",{match:H[0].map?MAPN(H[0].map):tl("last match")})}: ${h.mates.map(m=>`${esc(m.name)} ${m.heard}${m.only?` (${tl("only them: {n}",{n:m.only})})`:""}`).join(" · ")}${h.missed_by_you?" · "+tl("{n} that you could not hear",{n:h.missed_by_you}):""}.</p>`:""}
-   ${L.length?`<details><summary style="cursor:pointer">${tl("Sound by sound, {match}",{match:H[0].map?MAPN(H[0].map):tl("last match")})}</summary><div class="tbl" style="margin-top:8px"><table><thead><tr><th class="n">${tl("Round")}</th><th class="n">${tl("Time")}</th><th>${tl("Where")}</th><th>${tl("What")}</th><th>${tl("Who could hear it")}</th><th>${tl("You")}</th></tr></thead><tbody>
-     ${L.map(x=>`<tr><td class="n">${x.round}</td><td class="n">${Math.round(x.t)} s</td><td>${esc(x.place||"—")}</td><td>${x.n>1?tl("{n} enemies, ",{n:x.n}):""}${SND[x.kind]||esc(x.kind)}</td><td class="wrap">${x.who.map(esc).join(", ")}</td>
-       <td class="wrap">${x.fight?`<span class="note">${tl("your fight")}</span>`:x.called?`<span class="good">“${esc(x.called)}”</span> <span class="note">${x.react!=null?x.react+" s":""}</span>`:`<span class="note">${tl("not called: {why}",{why:WHY[x.why]||"—"})}</span>`}${x.team_called?` <span class="pill">${tl("your team called it")}</span>`:""}</td></tr>`).join("")}</tbody></table></div></details>`:""}`}
+   ${teamCallsBlock(C)}
+   `}
 // after your team's calls naming a place (your team's sound, recorded when every teammate agreed): where you went
 function teamCallsBlock(C){const T=C.filter(a=>a.team_calls&&a.team_calls.calls);if(!T.length)return "";
   const S=k=>T.reduce((s,a)=>s+(a.team_calls[k]||0),0),n=S("calls"),pc=x=>n?Math.round(100*x/n)+"%":"—",t=T[0].team_calls;
@@ -55,23 +29,6 @@ function teamCallsBlock(C){const T=C.filter(a=>a.team_calls&&a.team_calls.calls)
     <div><b>${pc(S("away"))}</b><span>${tl("you went the other way")}</span></div><div><b>${t.react_s!=null?t.react_s+" s":"—"}</b><span>${tl("from their call to your move")}</span></div></div>
    <details><summary style="cursor:pointer">${tl("Call by call, {match}",{match:T[0].map?MAPN(T[0].map):tl("last match")})}</summary><div class="tbl" style="margin-top:8px"><table><thead><tr><th class="n">${tl("Round")}</th><th class="n">${tl("Time")}</th><th>${tl("Your team said")}</th><th>${tl("You")}</th></tr></thead><tbody>
      ${t.list.map(x=>`<tr><td class="n">${x.round}</td><td class="n">${Math.round(x.t)} s</td><td class="wrap">“${esc(x.text)}”</td><td>${W[x.went]||esc(x.went)}${x.react!=null?` <span class="note">${tl("after {n} s",{n:x.react})}</span>`:""}</td></tr>`).join("")}</tbody></table></div></details>`}
-// the mood of each recorded match: one column per round (background: won or lost; bar: your damage), dots above for
-// what you felt (said with "coach <word>": ringed), a line where the sides change; and what a frustrated moment costs
-const MOOD_C={frustration:"var(--bad)",doubt:"var(--flash)",suspicion:"#b07ce8",positive:"var(--good)",note:"var(--muted)"};
-function moodBlock(PL){const C=(PL.calls||[]).filter(a=>a.aligned&&(a.rounds||[]).some(r=>r.dmg!=null));if(!C.length)return "";const MS=PL.mood;
-  const strip=a=>{const rs=a.rounds,n=rs.length,W=1000,H=70,cw=W/n;
-    return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:1100px;display:block" role="img" aria-label="${tl("Rounds and feelings")}">${rs.map((r,i)=>{const x=i*cw,h=Math.round(30*Math.min(1,(r.dmg||0)/200)),col=r.won?"var(--good)":"var(--bad)";
-      const ms=(r.moods||[]).filter(m=>MOOD_C[m.kind]).slice(0,2),sw=i&&rs[i-1].side&&r.side&&rs[i-1].side!==r.side;
-      return `${sw?`<line x1="${x}" y1="0" x2="${x}" y2="${H-12}" stroke="var(--muted)" stroke-dasharray="3 3"/>`:""}
-        <rect x="${x+1}" y="20" width="${cw-2}" height="36" rx="2" fill="${r.won==null?"var(--line)":col}" fill-opacity=".16"/>
-        <rect x="${x+cw*.25}" y="${56-h}" width="${cw*.5}" height="${h}" rx="1" fill="${r.won==null?"var(--muted)":col}" opacity=".85"/>
-        ${ms.map((m,j)=>`<circle cx="${x+cw/2}" cy="${14-j*8}" r="3.6" fill="${MOOD_C[m.kind]}"${m.coach?` stroke="var(--ink)" stroke-width="1.4"`:""}><title>${esc(m.word||m.kind)}</title></circle>`).join("")}
-        <text x="${x+cw/2}" y="${H-1}" text-anchor="middle" class="vct">${r.round}</text>`}).join("")}</svg>`};
-  const cnt=a=>Object.entries(a.moods||{}).filter(([k,v])=>v&&MOOD_C[k]).map(([k,v])=>`<span class="vchip" style="color:${MOOD_C[k]}">● ${v}</span>`).join("");
-  return `<h3>${tl("Your mood, match by match")}</h3>
-   <div class="vleg"><span><i style="background:var(--bad)"></i>${tl("frustration")}</span><span><i style="background:var(--flash)"></i>${tl("doubt")}</span><span><i style="background:#b07ce8"></i>${tl("suspicion")}</span><span><i style="background:var(--good)"></i>${tl("positive")}</span><span><i style="background:var(--muted)"></i>${tl("a note")}</span><span>${tl("ringed: said with \"coach …\"")}</span><span>${tl("bar: your damage · background: round won / lost")}</span></div>
-   ${MS&&MS.after&&MS.other?`<div class="gauge"><div><b>${MS.after.adr} <small>vs ${MS.other.adr}</small></b><span>${tl("ADR in the 3 rounds after a frustrated moment ({n} rounds) vs the others",{n:MS.after.n})}</span></div><div><b>${MS.after.won}% <small>vs ${MS.other.won}%</small></b><span>${tl("rounds won after it vs the others")}</span></div></div>`:""}
-   ${C.slice(0,4).map(a=>`<div class="mood-row"><div class="mood-h"><b>${a.map?MAPN(a.map):tl("Match")}</b><span class="note">${fmtDate(a.start)}</span>${cnt(a)}</div>${strip(a)}</div>`).join("")}`}
 // what the demos say about the frustrations of the game: blocks both ways, how your flashes are played, team flashes,
 // and the enemies whose kills look odd or who got banned (indicators, not proof)
 function factsBlock(PL){const F=PL.facts;if(!F||!F.matches)return "";const fy=F.flashes.yours,pm=x=>(x/F.matches).toFixed(1),pc=(x,n)=>n?Math.round(100*x/n)+"%":"—";
@@ -95,6 +52,7 @@ const rtBadge=r=>r==null?`<span class="note">—</span>`:`<span class="rt ${rtCl
 // 13/10, the user: "get few data on dot hover (map, result, rating, adr)": over each dot a target bigger than the dot
 // (hover, or focus: a tap on a phone, the keyboard) shows its match's map, date, result and score, rating and ADR; a
 // click opens that match (on a touchscreen the first tap shows the card, the second opens it)
+// a loss a ring, a win a dot (03/11, the interface's review: the result was told by its color alone)
 function ratingSpark(T){if(!T||T.length<2)return "";const W=640,H=120,pad=12,rs=T.map(x=>x.rating),lo=Math.min(.4,...rs),hi=Math.max(1.8,...rs);
   const X=i=>pad+i*(W-2*pad)/(T.length-1),Y=r=>H-pad-(r-lo)/(hi-lo)*(H-2*pad),first=T.findIndex(x=>x.recent),bx=first>0?(X(first-1)+X(first))/2:pad;
   const RES={win:tl("Win"),loss:tl("Loss"),draw:tl("Draw")};
@@ -106,7 +64,7 @@ function ratingSpark(T){if(!T||T.length<2)return "";const W=640,H=120,pad=12,rs=
    <line x1="${pad}" x2="${W-pad}" y1="${Y(1)}" y2="${Y(1)}" stroke="var(--muted)" stroke-dasharray="4 4" opacity=".55"/>
    <text x="${pad}" y="${Y(1)-5}" class="vct">1.00</text>
    <polyline points="${T.map((x,i)=>`${X(i).toFixed(1)},${Y(x.rating).toFixed(1)}`).join(" ")}" fill="none" stroke="var(--ink)" stroke-opacity=".3" stroke-width="1.5"/>
-   ${T.map((x,i)=>`<circle cx="${X(i).toFixed(1)}" cy="${Y(x.rating).toFixed(1)}" r="${x.recent?5:3.2}" fill="${x.result==="win"?"var(--good)":x.result==="loss"?"var(--bad)":"var(--muted)"}" opacity="${x.recent?1:.45}"/>`).join("")}</svg>
+   ${T.map((x,i)=>`<circle cx="${X(i).toFixed(1)}" cy="${Y(x.rating).toFixed(1)}" r="${x.recent?5:3.2}" fill="${x.result==="win"?"var(--good)":x.result==="loss"?"var(--panel)":"var(--muted)"}"${x.result==="loss"?` stroke="var(--bad)" stroke-width="2"`:""} opacity="${x.recent?1:.45}"/>`).join("")}</svg>
    ${T.map((x,i)=>{const px=X(i)/W,py=Y(x.rating)/H;
      return `<button type="button" class="sp-dot${px<.2?" l":px>.8?" r":""}${py<.45?" b":""}"${x.id?` data-dmid="${esc(x.id)}"`:""} style="left:${(px*100).toFixed(2)}%;top:${(py*100).toFixed(2)}%" aria-label="${esc(lbl(x))}"><span class="sp-tip" aria-hidden="true">${tip(x)}</span></button>`}).join("")}</div>`}
 // 1 · the session (07/10, the user: "évite les répétitions d'informations, de data, regroupe si plusieurs data parlent
@@ -127,7 +85,7 @@ function reviewBrief(R,f){const T=R.trend||[],rec=T.filter(x=>x.recent),bef=T.fi
   const n=(R.pro||{}).matches;
   const how=`${n?tln(n,"An item opens its evidence: the reasons, the rounds (one opens it in the 2D replay), you against the base and the pros ({n} demo read).","An item opens its evidence: the reasons, the rounds (one opens it in the 2D replay), you against the base and the pros ({n} demos read)."):""}${R.stable.length?`<br><strong>${tl("Stable:")}</strong> ${R.stable.map(esc).join(" · ")}.`:""}`;
   const games=tln(R.session.games,"{n} game","{n} games");
-  return `<section class="tier" id="tier1"><div class="tier-h"><b>1</b><h3>${esc(PER_NAME[R.period]||tl("The session"))}</h3><span class="note">${tl("{games}, against your {n} matches before",{games,n:bef.length})}</span>${itip(how)}</div>
+  return `<section class="tier" id="tier1"><div class="tier-h"><b>1</b><h3>${esc(PER_NAME[R.period]||tl("The session"))}</h3><span class="note">${bef.length?tl("{games}, against your {n} matches before",{games,n:bef.length}):games}</span>${itip(how)}</div>
    <div class="brief">
     <div class="tiles">
      <div class="tile"><span class="eyebrow">${tl("Record")}</span><b class="num big">${R.session.wins}-${R.session.losses}</b><span class="note">${games}</span></div>
@@ -157,21 +115,21 @@ function reviewMaps(R){if(!(R.maps||[]).length)return "";const ms=R.session.matc
      <div class="mc-matches">${(xs=>xs.slice(-6).reverse().map(x=>`<button type="button" class="mc-m" data-mid="${x.id}" title="${tl("Open this match")}"><span>${esc(fmtDate(x.time))}</span><span class="res ${x.result}">${x.score.me}-${x.score.them}</span>${rtBadge(x.rating)}</button>`).join("")+(xs.length>6?`<span class="note">${tl("+{n} earlier",{n:xs.length-6})}</span>`:""))(ms.filter(x=>x.map===m.map))}</div></article>`).join("")}</div></section>`}
 // the window of the Review (07/10, the user: "la dernière session exactement comme tu fais, mais un bouton pour changer
 // en last 7 days, this week, this month"): the last session first, the others computed with the plan (review_periods)
-const PER=[["session",tl("Last session")],["7d",tl("Last 7 days")],["week",tl("This week")],["month",tl("This month")],["30d",tl("Last 30 days")]],
-  PER_NAME={session:tl("The session"),"7d":tl("The last 7 days"),week:tl("This week"),month:tl("This month"),"30d":tl("The last 30 days")};
+const PER=[["session",tl("Last session")],["7d",tl("Last 7 days")],["week",tl("This week")],["month",tl("This month")],["30d",tl("Last 30 days")],["all",tl("All")]],
+  PER_NAME={session:tl("The session"),"7d":tl("The last 7 days"),week:tl("This week"),month:tl("This month"),"30d":tl("The last 30 days"),all:tl("All your matches")};
 function renderReview(){const p=P(),v=$("#v-review"),PL=p.advice.plan||{},RP=PL.review_periods||{};
   let per=store("revper")||"session";if(per!=="session"&&!RP[per])per="session";
   const R=per==="session"?reviewOf(PL):RP[per];
   const pick=Object.keys(RP).length?`<div class="btns per-pick" role="group" aria-label="${tl("Period")}">${PER.map(([k,t])=>{const ok=k==="session"?!!reviewOf(PL):!!RP[k];
     return `<button type="button" data-per="${k}" aria-pressed="${k===per}" ${ok?"":`disabled title="${tl("Fewer than 2 analyzed matches in it")}"`}>${t}</button>`}).join("")}</div>`:"";
-  const head=`<div class="head"><div style="display:grid;gap:4px"><span class="eyebrow">${esc(p.name)}${R?" · "+tl("{period}, compared with your previous {n} matches",{period:esc(R.label),n:R.n_before}):""}</span><h2>${tl("Review")}</h2></div>${pick}</div>`;
+  const head=`<div class="head"><div style="display:grid;gap:4px"><span class="eyebrow">${esc(p.name)}${R?" · "+(R.n_before?tl("{period}, compared with your previous {n} matches",{period:esc(R.label),n:R.n_before}):esc(R.label)):""}</span><h2>${tl("Review")}</h2></div>${pick}</div>`;
   if(!R){v.innerHTML=head+`<div class="empty">${tl("The review compares your latest matches with the previous ones: it takes at least 3 matches analyzed with their demo.")}${p.light?" "+tl("This profile has no demo yet."):""}</div>`;return}
   const f=(x,u)=>fmtU(x,u);
-  const comms=callsBlock(PL)+moodBlock(PL),facts=factsBlock(PL);   // 07/10: no suspects table, no live check (the user: "enlève ça")
+  const comms=callsBlock(PL),facts=factsBlock(PL);   // 07/10: no suspects table, no live check (the user: "enlève ça")
   v.innerHTML=head+`
    ${reviewBrief(R,f)}
    ${reviewMaps(R)}
-   ${comms?`<section class="tier" id="tier3"><div class="tier-h"><b>3</b><h3>${tl("Your comms")}</h3>${itip(tl("Your calls, what you heard and what you called of it, your mood: from your microphone's recordings, lined up with the rounds."))}</div>${comms}</section>`:""}
+   ${comms?`<section class="tier" id="tier3"><div class="tier-h"><b>3</b><h3>${tl("Your comms")}</h3>${itip(tl("Your calls, from your microphone's recordings, lined up with the rounds."))}</div>${comms}</section>`:""}
    ${facts?`<section class="tier" id="tier4"><div class="tier-h"><b>${comms?4:3}</b><h3>${tl("Teamplay")}</h3>${itip(tl("Blocks, flashes and team flashes, from the demos of your last matches."))}</div>${facts}</section>`:""}
 `;
   $$("[data-per]",v).forEach(b=>b.onclick=()=>{store("revper",b.dataset.per);renderReview();syncUrl()});   // ?period= in the address

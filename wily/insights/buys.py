@@ -12,6 +12,7 @@ from collections import Counter
 import pandas as pd
 
 from wily.core import config
+from wily.core import ledger
 from wily.core.i18n import N_, tr, trn
 from wily.demos.map_analysis import humanize
 
@@ -80,32 +81,39 @@ def rows_for(ddir):
 
 
 def run_all(log=print):
+    """The matches whose buys are missing or older than their loadout (the ones found up to date before are not
+    opened again: ledger.py, 15/10)."""
     os.makedirs(OUT, exist_ok=True)
+    led = ledger.Ledger("buys", version="buy_util")
+    have = ledger.names(OUT)
     n = 0
-    for mid in os.listdir(config.DEEP):
+    for mid, stamp in ledger.folders(config.DEEP).items():
+        if mid in have and led.settled(mid, stamp):
+            continue
         d = os.path.join(config.DEEP, mid)
         f = os.path.join(OUT, f"{mid}.parquet")
         lo = os.path.join(d, "loadout.parquet")
         if not os.path.exists(lo) or not os.path.exists(os.path.join(d, "rounds.parquet")):
             continue
-        if os.path.exists(f) and os.path.getmtime(f) >= os.path.getmtime(lo):
+        if mid in have and os.path.getmtime(f) >= os.path.getmtime(lo):
+            led.mark(mid, stamp)
             continue
         import pyarrow.parquet as pq
-        if os.path.exists(f) and "buy_util" not in pq.read_schema(lo).names:
+        if mid in have and "buy_util" not in pq.read_schema(lo).names:
             continue
         try:
             rows_for(d).to_parquet(f)
+            led.mark(mid, stamp)
             n += 1
         except Exception as e:
             log(f"[{mid}] buys: {e}")
+    led.save()
     return n
 
 
 def load():
-    fs = [os.path.join(OUT, f) for f in os.listdir(OUT) if f.endswith(".parquet")] if os.path.exists(OUT) else []
-    dfs = [pd.read_parquet(f) for f in fs]
-    dfs = [x for x in dfs if len(x)]
-    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+    """Every match's buys as one (kept consolidated: only the new matches' files are read, ledger.py)."""
+    return ledger.stacked(OUT, "buys", skip_empty=True)
 
 
 def kit(row):
@@ -219,17 +227,24 @@ def _blend(b, p, m, key, by, bonus=None, need=(12, 8, 3)):
     somewhere (need = base, profile, you) to be proposed at all."""
     if not len(b) and not len(m):
         return []
-    agg = lambda df: df.groupby(key).agg(n=("won", "size"), w=("won", "sum"), dmg=("damage", "sum")) if len(df) else pd.DataFrame(columns=["n", "w", "dmg"])
+    def agg(df):   # 16/10: size and sums straight (the named aggregation's overhead, 957 times a plan): the same numbers
+        if not len(df):
+            return pd.DataFrame(columns=["n", "w", "dmg"])
+        g = df.groupby(key)
+        return pd.DataFrame({"n": g.size(), "w": g["won"].sum(), "dmg": g["damage"].sum()})
     B, P, M = agg(b), agg(p), agg(m)
     p0 = b.won.mean() if len(b) else 0.5
     a0 = b.damage.mean() if len(b) else 80.0
     out = []
-    for k in set(B.index) | set(P.index) | set(M.index):
+    # each table read once (16/10: three row lookups per option and per table, thousands a plan)
+    rows = lambda T: {k: (int(n), float(w), float(d)) for k, n, w, d in zip(T.index, T.n, T.w, T.dmg)}
+    Bd, Pd, Md = rows(B), rows(P), rows(M)
+    for k in sorted(set(B.index) | set(P.index) | set(M.index), key=str):   # 16/10: equal scores in one order (a set's changed each run)
         if not k:
             continue
-        nb, wb, db = (int(B.loc[k].n), float(B.loc[k].w), float(B.loc[k].dmg)) if k in B.index else (0, 0.0, 0.0)
-        np_, wp, dp = (int(P.loc[k].n), float(P.loc[k].w), float(P.loc[k].dmg)) if k in P.index else (0, 0.0, 0.0)
-        nm, wm, dm = (int(M.loc[k].n), float(M.loc[k].w), float(M.loc[k].dmg)) if k in M.index else (0, 0.0, 0.0)
+        nb, wb, db = Bd.get(k, (0, 0.0, 0.0))
+        np_, wp, dp = Pd.get(k, (0, 0.0, 0.0))
+        nm, wm, dm = Md.get(k, (0, 0.0, 0.0))
         if nb < need[0] and np_ < need[1] and nm < need[2]:
             continue
         if by == "win":
@@ -286,7 +301,10 @@ def adapted(sid, maps, arch=None, zone_duels=None, weapons_info=None):
     Bf = load()
     if not len(Bf):
         return None
-    Bf["kit"] = Bf.apply(kit, axis=1)
+    # each buy's label, once per combination (7,000 for the base's million rows: 0.5 s instead of 10 to 35, 15/10)
+    cols = ["rtype", "weapon", "armor", "util_n", "util"]
+    u = Bf[cols].drop_duplicates()
+    Bf["kit"] = Bf[cols].merge(u.assign(kit=u.apply(kit, axis=1)), on=cols, how="left")["kit"].to_numpy()
     if "util_known" in Bf:
         Bf.loc[Bf.rtype.isin(["pistol", "eco"]) & ~Bf.util_known.fillna(False).astype(bool), "kit"] = None
     ids, roles = peers(sid, arch)
@@ -318,9 +336,14 @@ def adapted(sid, maps, arch=None, zone_duels=None, weapons_info=None):
                             "win": round(100 * me[me.rtype == rt].won.mean()) if len(me[me.rtype == rt]) else None,
                             "peer_win": round(100 * Pf[Pf.rtype == rt].won.mean()) if len(Pf[Pf.rtype == rt]) else None,
                             "kits": kits[:3], "sides": sides}
+    # the rows split once by map, side and type of round, each zone judged once (16/10: 160 selections of the million
+    # rows, every row's zone checked one at a time: 30 s a plan); the same rows, in the same order
+    split = lambda x: {k: g for k, g in x.groupby(["map", "side", "rtype"], sort=False)}
+    SB, SP, SM = split(Bf), split(Pf), split(me)
     for mp in maps:
         for side in ("T", "CT"):
             ok_zone = lambda z: bool(z) and "spawn" not in z.lower() and not (side == "T" and z.lower().startswith("bombsite"))
+            zoned = lambda x: x[x.zone.isin([z for z in pd.unique(x.zone) if ok_zone(z)])]
             duel_z = zd.get((mp, side), {})
 
             def zone_bonus(z):
@@ -332,12 +355,11 @@ def adapted(sid, maps, arch=None, zone_duels=None, weapons_info=None):
                 return float(0.75 * ((k + 3) / (k + d + 6) - 0.5)), tr("your duels here (all rounds): {k}-{d}", k=k, d=d)
             for rt in TYPES:
                 by = "adr" if rt == "eco" else "win"
-                sel = lambda x: x[(x["map"] == mp) & (x.side == side) & (x.rtype == rt)]
-                b, p, m = sel(Bf), sel(Pf), sel(me)
+                b, p, m = (S.get((mp, side, rt), x.iloc[:0]) for S, x in ((SB, Bf), (SP, Pf), (SM, me)))
                 if len(b) < 20 and len(m) < 2:
                     continue
                 buy = lambda x: fits(x[~x.weapon.isin(NOT_BUYABLE[side])], rt)
-                zones = _blend(b[b.zone.map(ok_zone)], p[p.zone.map(ok_zone)], m[m.zone.map(ok_zone)], "zone", by, zone_bonus, need=(15, 8, 3))
+                zones = _blend(zoned(b), zoned(p), zoned(m), "zone", by, zone_bonus, need=(15, 8, 3))
                 kits = _real_buys(_blend(buy(b), buy(p), buy(m), "kit", by, weapon_bonus, need=(15, 10, 3)), rt)
                 res["maps"].setdefault(mp, {}).setdefault(side, {})[rt] = {
                     "label": TYPE_FR[rt], "by": by, "n_base": int(len(b)), "n_peer": int(len(p)), "n_me": int(len(m)),

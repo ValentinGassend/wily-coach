@@ -1,24 +1,18 @@
 // ---------- Wily, said out loud (06/10, the user: "que Wily fonctionne comme Jarvis... chaque information que je donne
 // à Wily doit être prise en compte"): wily.py reads the order, gsi.wily keeps it on the round (g.wily) and the match's
-// habits (g.wily_match). The page shows what Wily understood (a card, and its voice), what the order changes (the way,
+// habits (g.wily_match). The page shows what Wily understood (a card; no voice since 20/10), what the order changes (the way,
 // the tempo, your buy or theirs, what the panel and the map show), and asks in a few words when a piece is missing
 // (numpad 1-2-3 or the word answers).
 function wilyOf(g){const w=g&&g.wily;return w&&w.round===g.round?w:null}
-const WILY_SAID={t:0};
 // Wily's acknowledgement in a language: gsi.wily writes one per language of the app (acks, 13/10); an older state has
 // the French one (ack) and the English one (ack_en)
 function wilyAckIn(w,l){const A=w.acks||{};return A[l]||(l==="fr"?w.ack:l==="en"?w.ack_en:null)||null}
 const ASK_Q=l=>({"From where?":tlv("From where?",l),"Which site?":tlv("Which site?",l)});
-function wilyVoice(g){const w=wilyOf(g);if(!w||!w.t||w.t===WILY_SAID.t)return;WILY_SAID.t=w.t;if(Date.now()/1000-w.t>8||!voiceOn())return;
-  const o=w.ask?w.ask.opts.map(o=>o==="MID"?"mid":o):[];
-  coachSay(l=>{const a=wilyAckIn(w,l);if(!a&&l!=="en")TLV.miss=true;   // no ack in that language: English, or nothing
-    const q=w.ask?`${ASK_Q(l)[w.ask.q]||w.ask.q} ${o.join(" "+tlv("or",l)+" ")}${{fr:" ?",zh:"？"}[l]||"?"}`:"";   // "A ou mid ?" as before in French
-    return [a||wilyAckIn(w,"en")||"",q].filter(Boolean).join(". ")})}
-// what Wily understood, in the language the coach speaks (the page's when no voice speaks)
-function wilyAck(w){const l=voiceLang()||LANG;return wilyAckIn(w,l)||wilyAckIn(w,LANG)||wilyAckIn(w,"en")||w.ack||""}
+// what Wily understood, in the page's language
+function wilyAck(w){return wilyAckIn(w,LANG)||wilyAckIn(w,"en")||w.ack||""}
 // the card: the order understood (25 s), the question until it's answered
 function vWily(g){const w=wilyOf(g);if(!w)return "";const age=Date.now()/1000-(w.t||0);if(age>25&&!w.ask)return "";
-  return `<div class="vwily"><b>🎙 WILY</b><span>${esc(wilyAck(w))}</span>${w.ask?`<div class="vask"><em>${esc(ASK_Q(LANG)[w.ask.q]||w.ask.q)}</em>${w.ask.opts.map(o=>`<span class="vchip"><small>${{A:"1",MID:"2",B:"3"}[o]||""}</small> ${o==="MID"?tl("mid"):o}</span>`).join("")}</div>`:""}</div>`}
+  return `<div class="vwily"><b>${IC("mic")} WILY</b><span>${esc(wilyAck(w))}</span>${w.ask?`<div class="vask"><em>${esc(ASK_Q(LANG)[w.ask.q]||w.ask.q)}</em>${w.ask.opts.map(o=>`<span class="vchip"><small>${{A:"1",MID:"2",B:"3"}[o]||""}</small> ${o==="MID"?tl("mid"):o}</span>`).join("")}</div>`:""}</div>`}
 // your buy and theirs said to Wily ("Wily force-buy", "Wily anti-éco"): the odds of the round follow them
 function wilyBuy(g){const w=wilyOf(g);return w&&w.buy?w.buy:null}
 function enemyBuyW(p,g){const w=wilyOf(g);if(w&&w.their==="eco")return {eco:1,force:0,full:0};return enemyBuy(p,g)}
@@ -31,7 +25,7 @@ const nadeLi=u=>`<span class="vnd"><i style="background:${NADE_C[u.type]||"#ccc"
 // rounds), the grenades onto its ways in that hold it most (rounds held when thrown, vs the usual)
 function vCounter(p,g,f){const TD=tdirsOf(g.map),D_=TD&&TD.defense&&TD.defense[f.site];if(!D_)return `<div class="vdir"><div class="vdir-h"><b>${tl("VS RUSH {site}",{site:esc(f.site||"")})}</b> · ${tl("no rush on that site in my base yet")}</div></div>`;
   const W=(D_.weapons||[]).slice(0,3).map(w=>`<span class="vtag">${esc(WPN[w.w]||w.w)} <small>${w.share}%</small></span>`).join("");
-  const sp=(D_.spots||[]).slice(0,3).map(s=>`<span class="vchip">📍 ${esc(vShort(s.zone||"?"))} <small>${tln(s.kills,"{n} kill","{n} kills")}</small></span>`).join("");
+  const sp=(D_.spots||[]).slice(0,3).map(s=>`<span class="vchip">${IC("map-pin")} ${esc(vShort(s.zone||"?"))} <small>${tln(s.kills,"{n} kill","{n} kills")}</small></span>`).join("");
   const U=(D_.util||[]).filter(u=>u.edge>0).slice(0,3).map(u=>`<div class="vstack">${nadeLi(u)}<small class="edge">${tl("+{n} held",{n:u.edge})}</small></div>`).join("");
   return `<div class="vdir"><div class="vdir-h"><b>${tl("VS RUSH {site}",{site:esc(f.site)})}</b>${f.n?" · "+tl("{n} stack",{n:f.n}):""} · ${tl("held {p}%",{p:D_.ct_win})} <small>(${tln(D_.n,"{n} rush","{n} rushes")})</small></div>
     ${U?`<div class="vhead">${tl("UTILITY THAT HOLDS IT")}</div><div class="vstacks">${U}</div>`:""}${sp?`<div class="vhead">${tl("WHERE THE KILLS ARE")}</div><div class="vchips">${sp}</div>`:""}${W?`<div class="vhead">${tl("WITH")}</div><div class="vtags">${W}</div>`:""}</div>`}

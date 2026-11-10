@@ -59,7 +59,7 @@ def duel_table(mids, steamid=None):
             if w in GUNS:
                 lost[w] += 1
     out = {}
-    for w in set(won) | set(lost):
+    for w in sorted(set(won) | set(lost)):   # 16/10: in one order (a set's changed each run, and the first 12 are kept)
         n = won[w] + lost[w]
         out[w] = {"won": won[w], "lost": lost[w], "n": n, "win": round(100 * won[w] / n) if n else None}
     return out
@@ -94,7 +94,8 @@ def _n_demos():
     """The base's demos (counted once a minute: a plan build asked 511 times)."""
     import time
     if time.time() - _N[0] > 60:
-        _N[0], _N[1] = time.time(), sum(1 for m in os.listdir(config.DEEP) if os.path.exists(os.path.join(config.DEEP, m, "loadout.parquet")))
+        from wily.core import ledger
+        _N[0], _N[1] = time.time(), sum(1 for f in ledger.match_facts().values() if f.get("loadout"))   # no file checked one by one
     return _N[1]
 
 

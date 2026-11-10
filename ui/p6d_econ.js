@@ -152,9 +152,9 @@ function keyWeapons(p,g,k){const W=((((p.advice.plan||{}).tside||{}).setplay_w||
   return {list,mine,budget}}
 function vKey(p,g){const k=keySit(p,g);if(!k)return "";const M=(((p.advice.plan||{}).tside||{}).maps||{})[g.map]||{},SP=((M.setplays||{})[g.side]||{})[k];
   const {list,mine,budget}=keyWeapons(p,g,k),pis=k==="pistol",val=w=>pis?w.win:w.adr,mx=Math.max(...list.map(val).filter(v=>v!=null),1);
-  const rows=list.map((w,i)=>`<div class="vrow${w.w===mine?" best":""}" style="--c:${w.w===mine?"var(--good)":"var(--flash)"}${w.w===mine||!i?"":";opacity:.7"}"><span>${w.w===mine?"✓ ":""}${esc(W_SHORT[w.w]||w.w.toUpperCase())}${w.exp?" 🧪":""}</span><i><u style="width:${val(w)==null?0:Math.max(4,Math.round(100*val(w)/mx))}%"></u></i><b>${val(w)==null?tl("test"):pis?w.win+"%":w.adr}</b><small>${w.exp&&val(w)==null?tl("your experiment"):pis?tl("{n} dmg",{n:w.adr}):tl("{p}% won",{p:w.win})}</small></div>`).join("");
+  const rows=list.map((w,i)=>`<div class="vrow${w.w===mine?" best":""}" style="--c:${w.w===mine?"var(--good)":"var(--flash)"}${w.w===mine||!i?"":";opacity:.7"}"><span>${w.w===mine?"✓ ":""}${esc(W_SHORT[w.w]||w.w.toUpperCase())}${w.exp?" "+IC("flask-conical"):""}</span><i><u style="width:${val(w)==null?0:Math.max(4,Math.round(100*val(w)/mx))}%"></u></i><b>${val(w)==null?tl("test"):pis?w.win+"%":w.adr}</b><small>${w.exp&&val(w)==null?tl("your experiment"):pis?tl("{n} dmg",{n:w.adr}):tl("{p}% won",{p:w.win})}</small></div>`).join("");
   const dup=(typeof sitKey==="function"&&!!sitKey(p,g))||(pis&&g.side==="CT");   // the situation card above has the header and its %
-  return `<div class="vsit key"><span>🔑 ${dup?tl("WEAPONS"):KEY_L[k]}</span>${SP&&SP.n>=15&&!dup?`<b class="${vTone(SP.win)}">${SP.win}%</b>`:""}</div>
+  return `<div class="vsit key"><span>${IC("key-round")} ${dup?tl("WEAPONS"):KEY_L[k]}</span>${SP&&SP.n>=15&&!dup?`<b class="${vTone(SP.win)}">${SP.win}%</b>`:""}</div>
     ${rows?`<div class="vhead">${pis?tl("ROUNDS WON"):tl("DAMAGE / ROUND")} · ${(k==="eco_full"||k==="eco_force")&&g.round_phase==="freezetime"?tl("budget {m}",{m:kMoney(budget)}):tl("base, every map")}</div><div class="vrows">${rows}</div>`:""}`}
 // the spots of a key round for a weapon family: this situation's, else every weapon in it, else the same family in the
 // other "against a full buy" situation (an eco and a force-buy hold the same angles with the same weapons)
@@ -238,7 +238,7 @@ function briefVisual(p,g){const TS=(p.advice.plan||{}).tside||{},M=(TS.maps||{})
   const kr=[["pistol",tl("PISTOL")],["eco_force",tl("R2 ECO")],["eco_full",tl("ECO")],["force_full",tl("FORCE")]].map(([k,l])=>{const w=first(k);return w?`<span class="vchip"><b>${l}</b> ${esc(WL[w]||W_SHORT[w]||w.toUpperCase())}</span>`:""}).join("");
   if(kr)out.push(vHead(tl("KEY ROUNDS · WEAPON")),`<div class="vchips">${kr}</div>`);
   if(T){const d=(((M.ct_spots||{}).setup||{}).danger||[]).filter(z=>z.sneaky).slice(0,2).map(z=>esc(z.zone||"?"));if(d.length)out.push(`<span class="vchip bad">! ${tl("check {zones}",{zones:d.join(", ")})}</span>`);
-    const cp=((M.ct_push||{}).full||{}).gates||[],zs=cp.filter(x=>x.share>=5).map(x=>x.gate).filter(Boolean).slice(0,2);if(zs.length)out.push(`<span class="vchip">➜ ${tl("CT pushes: {zones}",{zones:zs.map(esc).join(", ")})}</span>`)}
+    const cp=((M.ct_push||{}).full||{}).gates||[],zs=cp.filter(x=>x.share>=5).map(x=>x.gate).filter(Boolean).slice(0,2);if(zs.length)out.push(`<span class="vchip">${IC("arrow-right")} ${tl("CT pushes: {zones}",{zones:zs.map(esc).join(", ")})}</span>`)}
   else{const mine=(((p.advice.plan||{}).multi||{})[g.map]||{}).CT||[];if(mine.length)out.push(`<span class="vchip good">★ ${tl("your multi-kills: {zones}",{zones:[...new Set(mine.map(s=>s.zone))].slice(0,3).map(esc).join(", ")})}</span>`)}
   return `<div class="vz">${out.join("")}</div>`}
 // predictability: the plays shown as path 1 this half (kept in this browser), the ones that lost go down, a play

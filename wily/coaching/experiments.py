@@ -132,6 +132,34 @@ def _mid_rows(mid, sid):
     return r.iloc[0] if len(r) else None
 
 
+_VA = {"sig": None, "idx": {}}
+
+
+def _voice_by_match():
+    """{match: its first aligned recording's analysis with deaths}, the analyses read once while none changes (16/10:
+    every analysis read again for each match of each experiment, 1,936 files a plan)."""
+    import glob
+    fs = glob.glob(os.path.join(config.OUT, "voice", "*.analysis.json"))
+    sig = []
+    for fa in fs:
+        try:
+            st = os.stat(fa)
+            sig.append((fa, st.st_mtime_ns, st.st_size))
+        except OSError:
+            sig.append((fa, None, None))
+    if sig != _VA["sig"]:
+        idx = {}
+        for fa in fs:
+            try:
+                a = json.load(open(fa, encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if a.get("aligned") and a.get("deaths"):
+                idx.setdefault(str(a.get("match")), {k: a[k] for k in ("deaths", "silent_deaths") if k in a})
+        _VA.update(sig=sig, idx=idx)
+    return _VA["idx"]
+
+
 def match_values(sid, m, st, template, params):
     """-> (value, weight) or (k, n) counts for proportion metrics, for one match."""
     metric = TEMPLATES[template]["metric"]
@@ -215,14 +243,9 @@ def match_values(sid, m, st, template, params):
         k, dd = int((D.killer == sid).sum()), int((D.victim == sid).sum())
         return ("k", k, k + dd)
     if metric == "call_before_death":
-        import glob
-        for fa in glob.glob(os.path.join(config.OUT, "voice", "*.analysis.json")):
-            try:
-                a = json.load(open(fa, encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if str(a.get("match")) == str(m["id"]) and a.get("aligned") and a.get("deaths"):
-                return ("k", a["deaths"] - a["silent_deaths"], a["deaths"])
+        a = _voice_by_match().get(str(m["id"]))
+        if a:
+            return ("k", a["deaths"] - a["silent_deaths"], a["deaths"])
         return None, 0
     if metric == "first_game":
         return (m.get("_first_rating"), 1) if m.get("_first_rating") is not None else (None, 0)
@@ -307,7 +330,9 @@ def suggestions(sid, adv, mid_bench=None, weapons_info=None, ctx=None, cross=Non
     for s in (weapons_info or {}).get("suggestions", []):
         if s["kind"] == "weapon_weak":
             alt = {"M4A1-S": "M4A4", "M4A4": "M4A1-S", "Galil AR": "XM1014", "FAMAS": "XM1014", "MP9": "MP5-SD", "MAC-10": "Galil AR",
-                   "Desert Eagle": "P250", "AK-47": "Galil AR", "MAG-7": "MP9", "Nova": "XM1014"}.get(s["weapon"])   # same side, same price range
+                   "Desert Eagle": "P250", "MAG-7": "MP9", "Nova": "XM1014"}.get(s["weapon"])   # same side, same price range
+            # never the AK for the Galil (03/11, a tester's report: "Says replace AK with Galil. Pls dont have it say that"):
+            # the T side's rifle has no equal, a weak AK is worked on, not swapped
             if alt:
                 add("weapon_swap", s["text"], {"weapon": s["weapon"], "alt": alt}, 8)
         elif s["kind"] == "weapon_strong":

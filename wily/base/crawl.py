@@ -96,7 +96,7 @@ def collect_urls(max_new, prefer_maps, days, per_player=3, own_first=True):
 
 def process(info):
     mid = info["match_id"]
-    dem = os.path.join(config.CACHE, f"{mid}.dem")
+    dem = config.demo(mid)
     if not os.path.exists(dem):
         download(info["url"], dem + ".bz2")
         decompress(dem + ".bz2", dem)

@@ -41,7 +41,7 @@ def sounds(mid):
     f = os.path.join(d, "sounds.parquet")
     if os.path.exists(f):
         return pd.read_parquet(f)
-    dem, rf = os.path.join(config.CACHE, f"{mid}.dem"), os.path.join(d, "rounds.parquet")
+    dem, rf = config.demo(mid), os.path.join(d, "rounds.parquet")
     if not (os.path.exists(dem) and os.path.exists(rf)):
         return None
     from demoparser2 import DemoParser

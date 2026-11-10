@@ -53,7 +53,7 @@ def _rescues(d):
             return json.load(open(f, encoding="utf-8"))
         except (OSError, ValueError):
             pass
-    dem = os.path.join(config.CACHE, os.path.basename(d) + ".dem")
+    dem = config.demo(os.path.basename(d))
     fr = os.path.join(d, "rounds.parquet")
     if not (os.path.exists(dem) and os.path.exists(fr)):
         return []
@@ -235,7 +235,7 @@ def _carries(cs):
             cuts.append({"zone": q, "share": round(100 * len(cl) / len(L)), "after": round(float(np.median([c["zt"][q] for c in cl])), 1)})
         spots.append({"zone": z, "n": len(L), "s": round(float(np.median([c["s"] for c in L])), 1),
                       "t0": round(float(np.median([c["t0"] for c in L])), 1),
-                      "to": max(set(c["to"] for c in L if c["to"]), key=[c["to"] for c in L].count, default=None),
+                      "to": max(sorted(set(c["to"] for c in L if c["to"]), key=str), key=[c["to"] for c in L].count, default=None),
                       "cut": cuts, "pts": [[round(float(x_), 1), round(float(y_), 1), l_, round(float(t_) - ts[0], 1)] for (x_, y_), l_, t_ in zip(xy, lv, ts)]})
     return spots
 

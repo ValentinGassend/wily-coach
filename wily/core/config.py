@@ -154,7 +154,7 @@ def write_json(path, obj, **kw):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, **({"ensure_ascii": False} | kw))
+        f.write(json.dumps(obj, **({"ensure_ascii": False} | kw)))   # the same text in one write (16/10: json.dump wrote a 10 MB profile in thousands of pieces)
         f.flush()
         os.fsync(f.fileno())
     try:
@@ -289,7 +289,10 @@ def full_speed(pid=None):
         k.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
         k.SetProcessInformation.restype = wintypes.BOOL
         h = k.OpenProcess(0x0200, False, pid) if pid else k.GetCurrentProcess()   # PROCESS_SET_INFORMATION
-        st = _State(1, 0x1, 0)   # execution speed: never throttled
+        # execution speed never throttled (0x1); its timer resolution always honored (0x4: 16/10, Windows 11 ignores it for a
+        # process without a visible window: the training server, hidden, slept 30 ms instead of 1-15, "Long frame" every
+        # few seconds while he played on it)
+        st = _State(1, 0x1 | 0x4, 0)
         ok = bool(h) and bool(k.SetProcessInformation(h, 4, ctypes.byref(st), ctypes.sizeof(st)))   # ProcessPowerThrottling
         if pid and h:
             k.CloseHandle(h)
@@ -329,6 +332,8 @@ def low_priority():
             k.GetCurrentProcess.restype = wintypes.HANDLE   # 64-bit handle (the default int would cut it)
             k.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
             k.SetPriorityClass(k.GetCurrentProcess(), 0x40)   # IDLE_PRIORITY_CLASS
+            if not in_match():   # 16/10: the lowest priority alone puts a windowless worker on the slow cores (full_speed)
+                full_speed()
         else:
             os.nice(15)
     except Exception:
@@ -359,11 +364,68 @@ def display_name(sid, fallback=None):
     except OSError:
         pass
     sid = str(sid)
-    return _NAMES["map"].get(sid) or (settings().get("players", {}).get(sid) or {}).get("name") or fallback or sid
+    try:   # the settings' players read again only when the file changes (16/10: read once per name asked)
+        mt = os.path.getmtime(SETTINGS)
+        if mt != _NAMES.get("smtime"):
+            _NAMES.update(smtime=mt, players=settings().get("players", {}))
+        players = _NAMES["players"]
+    except OSError:
+        players = settings().get("players", {})
+    return _NAMES["map"].get(sid) or (players.get(sid) or {}).get("name") or fallback or sid
 
 
 def player_dir(steamid):
     return os.path.join(PLAYERS, str(steamid))
+
+
+# ---------- the demos: in the cache, or archived (15/10: 959 GB of demos on a 2 TB disk) ----------
+ARCHIVE = os.path.join(HERE, "cache_archive")   # the older demos, waiting to go to Google Drive
+_DEMOS = {"t": 0.0, "dirs": [], "where": {}, "missing": None}
+
+
+def demo_dirs():
+    """Where the demos are: the cache first, then the archives: cache_archive/ and the folders of the settings'
+    "demo_archives" (the Google Drive folder, streamed: a demo there is downloaded when read). Read again each minute."""
+    if time.time() - _DEMOS["t"] > 60:
+        extra = (settings().get("demo_archives") or [])
+        _DEMOS.update(t=time.time(), dirs=[CACHE, ARCHIVE] + [d for d in extra if isinstance(d, str)], where={}, missing=None)
+    return _DEMOS["dirs"]
+
+
+def archives_missing():
+    """The settings' archives this PC cannot reach now: the Google Drive folder while Drive is closed (29/10: G: gone,
+    his demos there taken for missing and fetched again from Valve). Read again each minute, as demo_dirs()."""
+    dirs = demo_dirs()
+    if _DEMOS["missing"] is None:
+        _DEMOS["missing"] = [d for d in dirs[2:] if not os.path.isdir(d)]
+    return _DEMOS["missing"]
+
+
+def demo(mid):
+    """A match's demo file: in the cache, else in an archive; where it would be fetched (the cache) when nowhere."""
+    p = os.path.join(CACHE, f"{mid}.dem")
+    if os.path.exists(p):
+        return p
+    for d in demo_dirs()[1:]:
+        q = os.path.join(d, f"{mid}.dem")
+        if os.path.exists(q):
+            return q
+    return p
+
+
+def has_demo(mid):
+    """Whether the match's demo is anywhere (cache or archives), from the folders' lists (read once a minute: loops
+    over many matches check no file one by one)."""
+    dirs = demo_dirs()
+    if not _DEMOS["where"]:
+        where = set()
+        for d in dirs:
+            try:
+                where |= {f[:-4] for f in os.listdir(d) if f.endswith(".dem")}
+            except OSError:
+                pass
+        _DEMOS["where"] = where
+    return str(mid) in _DEMOS["where"] or os.path.exists(os.path.join(CACHE, f"{mid}.dem"))
 
 
 def key_free(how):

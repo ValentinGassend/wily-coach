@@ -100,9 +100,27 @@ def _same_device(name, want):
     return bool(name and want) and (name == want or name.startswith(want[:31]) or want.startswith(name[:31]))
 
 
+def _cut_copy(a, b):
+    """Two names of one device: the same, or one of them PortAudio's 31 first characters of the other."""
+    return a == b or (len(a) == 31 and b.startswith(a)) or (len(b) == 31 and a.startswith(b))
+
+
 def devices():
-    cs2 = cs2_voice_device()
-    seen, out = set(), []
+    """The microphones to choose from, each once (16/10: 24 entries for 5 microphones in Settings: PortAudio lists a
+    device once per Windows sound API, MME's names cut to 31 characters, with the MME "Sound Mapper" and the
+    DirectSound "Primary Sound Capture Driver" that only mean the default, and WDM-KS's raw inputs, one per jack).
+    The longest of a device's names is kept: the recording still opens the first device matching it, as before.
+    chosen: the one the settings name."""
+    cs2, want = cs2_voice_device(), settings().get("device")
+    out = []
+
+    def add(name, default):
+        for d in out:
+            if _cut_copy(d["name"], name):
+                d["name"] = max(d["name"], name, key=len)
+                d["default"] = d["default"] or default
+                return
+        out.append({"name": name, "default": default})
     if backend() == "sc":
         import soundcard as sc
         try:
@@ -110,20 +128,69 @@ def devices():
         except Exception:
             default = None
         for m in sc.all_microphones(include_loopback=False):   # the monitors are the team sound, not your voice
-            if m.name not in seen:
-                seen.add(m.name)
-                out.append({"name": m.name, "default": m.name == default, "cs2": _same_device(m.name, cs2)})
-        return out
-    import sounddevice as sd
-    default = sd.query_devices(kind="input")["name"]
-    for d in sd.query_devices():
-        if d["max_input_channels"] > 0 and d["name"] not in seen:
-            seen.add(d["name"])
-            out.append({"name": d["name"], "default": d["name"] == default, "cs2": _same_device(d["name"], cs2)})
+            add(m.name, m.name == default)
+    else:
+        import sounddevice as sd
+        apis, devs = sd.query_hostapis(), sd.query_devices()
+        default = sd.query_devices(kind="input")["name"]
+        alias = set()   # each of these two APIs lists "the default" first, under a name in Windows' language
+        for a in apis:
+            if a["name"] in ("MME", "Windows DirectSound"):
+                alias |= {next((i for i in a["devices"] if devs[i]["max_input_channels"] > 0), None)}
+        for i, d in enumerate(devs):
+            if d["max_input_channels"] > 0 and i not in alias and apis[d["hostapi"]]["name"] != "Windows WDM-KS":
+                add(d["name"], _same_device(d["name"], default))
+    for d in out:
+        d["cs2"], d["chosen"] = _same_device(d["name"], cs2), _same_device(d["name"], want)
     return out
 
 
 # ---------- recording ----------
+def _target(b, name):
+    """(soundcard's microphone, sounddevice's index, its name, the rate to record at): the microphone named, else the
+    default one."""
+    mic = dev = None
+    rate = SR
+    if b == "sc":
+        import soundcard as sc
+        if name:
+            mic = next((m for m in sc.all_microphones(include_loopback=False) if _same_device(m.name, name)), None)
+        mic = mic or sc.default_microphone()
+        label = mic.name   # PulseAudio resamples to the rate asked for, so SR is always fine
+    else:
+        import sounddevice as sd
+        if name:
+            dev = next((i for i, d in enumerate(sd.query_devices())
+                        if d["max_input_channels"] > 0 and _same_device(d["name"], name)), None)
+        info = sd.query_devices(dev, kind="input")
+        label = info["name"]
+        try:
+            sd.check_input_settings(device=dev, samplerate=SR, channels=1)
+        except Exception:
+            rate = int(info["default_samplerate"])  # Whisper resamples on reading
+    return mic, dev, label, rate
+
+
+def test(seconds=3.0):
+    """The chosen microphone's loudest sample over a few seconds, nothing written (16/10: 10 of 14 recordings at exactly
+    0 and nothing said it outside the recordings' table). During a recording: its level of the last seconds, the
+    microphone not opened a second time."""
+    if REC.recording():
+        return {"device": (REC.meta or {}).get("device"), "peak": round(REC.level(), 4), "recording": True}
+    b = backend()
+    if b is None:
+        raise RuntimeError(available()[1])
+    mic, dev, label, rate = _target(b, chosen_device())
+    if b == "sc":
+        data = mic.record(numframes=int(rate * seconds), samplerate=rate, channels=1)
+    else:
+        import sounddevice as sd
+        data = sd.rec(int(rate * seconds), samplerate=rate, channels=1, dtype="float32", device=dev, blocking=True)
+    import numpy as np
+    a = abs(np.asarray(data, dtype="float32").reshape(-1))
+    return {"device": label, "peak": round(float(a.max()) if a.size else 0.0, 4), "recording": False}
+
+
 class _ScStream:
     """soundcard records through blocking calls: a thread makes them and hands each block over, behind the same
     start/stop/close a sounddevice stream has. The device opens inside that thread, so start() waits for it: a
@@ -167,9 +234,15 @@ class Recorder:
         self.lock = threading.Lock()
         self.stream = self.file = self.meta = None
         self.peak = 0.0          # loudest sample of the recording (silence = wrong microphone)
+        self.win = [0.0, 0.0, 0.0]   # the level now: [this second's start, its loudest sample, the second before's]
 
     def recording(self):
         return self.stream is not None
+
+    def level(self):
+        """The loudest sample of the last second or two (Settings' microphone test, during a recording)."""
+        w = self.win
+        return max(w[1], w[2]) if time.time() - w[0] < 2 else 0.0
 
     def start(self, map_name=None, steamid=None, source="auto"):
         import soundfile as sf
@@ -182,27 +255,9 @@ class Recorder:
             os.makedirs(DIR, exist_ok=True)
             now = dt.datetime.now()
             rid = f"{now:%Y%m%d_%H%M%S}_{(map_name or 'match').replace('de_', '').replace('cs_', '')}"
-            name = chosen_device()
             self.peak = 0.0
-            mic = dev = None
-            rate = SR
-            if b == "sc":
-                import soundcard as sc
-                if name:
-                    mic = next((m for m in sc.all_microphones(include_loopback=False) if _same_device(m.name, name)), None)
-                mic = mic or sc.default_microphone()
-                label = mic.name   # PulseAudio resamples to the rate asked for, so SR is always fine
-            else:
-                import sounddevice as sd
-                if name:
-                    dev = next((i for i, d in enumerate(sd.query_devices())
-                                if d["max_input_channels"] > 0 and _same_device(d["name"], name)), None)
-                info = sd.query_devices(dev, kind="input")
-                label = info["name"]
-                try:
-                    sd.check_input_settings(device=dev, samplerate=SR, channels=1)
-                except Exception:
-                    rate = int(info["default_samplerate"])  # Whisper resamples on reading
+            self.win = [0.0, 0.0, 0.0]
+            mic, dev, label, rate = _target(b, chosen_device())
             path = os.path.join(DIR, rid + ".flac")
             self.file = sf.SoundFile(path, mode="w", samplerate=rate, channels=1, format="FLAC")
             self.meta = {"id": rid, "file": rid + ".flac", "start": time.time(), "start_iso": now.isoformat(timespec="seconds"),
@@ -219,6 +274,11 @@ class Recorder:
                     p = float(abs(data).max()) if len(data) else 0.0
                     if p > self.peak:
                         self.peak = p
+                    w, now = self.win, time.time()
+                    if now - w[0] >= 1:
+                        w[0], w[1], w[2] = now, p, w[1]
+                    elif p > w[1]:
+                        w[1] = p
                 except Exception:
                     pass
 
@@ -596,21 +656,34 @@ def transcribe_mono(rid):
     return len(out)
 
 
+_REC = {"sig": None, "out": []}
+
+
 def recordings():
+    """The recordings, newest first: read again only when a file of the folder changed (16/10: read twice per plan)."""
     if not os.path.exists(DIR):
         return []
+    with os.scandir(DIR) as it:
+        sig = frozenset((e.name, e.stat().st_mtime_ns, e.stat().st_size) for e in it)
+    if sig != _REC["sig"]:
+        _REC.update(sig=sig, out=_recordings())
+    return [dict(r) for r in _REC["out"]]
+
+
+def _recordings():
     out = []
-    for f in sorted(os.listdir(DIR), reverse=True):
+    here = set(os.listdir(DIR))   # 15/10: the folder read once (each file checked one by one on the hard disk: 27 s)
+    for f in sorted(here, reverse=True):
         if f.endswith(".json") and f.count(".") == 1:   # a recording's own file (not its transcripts or analyses)
             m = json.load(open(os.path.join(DIR, f), encoding="utf-8"))
             rid = m["id"]
             a = os.path.join(DIR, rid + ".analysis.json")
             out.append({"id": rid, "start": m.get("start_iso"), "map": m.get("map"), "duration": m.get("duration"), "device": m.get("device"),
                         "rounds_marked": len({r.get("round") for r in m.get("rounds", [])}), "source": m.get("source"), "practice": bool(m.get("practice")),
-                        "transcribed": os.path.exists(os.path.join(DIR, rid + ".transcript.json")),
-                        "silent": bool(m.get("silent")) or (m.get("peak") is not None and m["peak"] < 0.01),
-                        "match": json.load(open(a, encoding="utf-8")).get("match") if os.path.exists(a) else None,
-                        "audio": os.path.exists(os.path.join(DIR, m["file"])),
+                        "transcribed": rid + ".transcript.json" in here,
+                        "silent": bool(m.get("silent")) or (m.get("peak") is not None and m["peak"] < 0.01), "peak": m.get("peak"),
+                        "match": json.load(open(a, encoding="utf-8")).get("match") if rid + ".analysis.json" in here else None,
+                        "audio": m["file"] in here,
                         "team": (m.get("team") or {}).get("consent")})
     return out
 
@@ -814,15 +887,16 @@ def mood_of(text):
 def _match_for(meta, sid):
     """The analyzed match played during this recording (same map, start time inside the recording)."""
     from wily.app import pipeline
-    reg = pipeline.registry()
+    from wily.core import ledger
+    reg = pipeline.registry_view()   # read only
+    facts = ledger.match_facts()   # 16/10: each match's map without its meta.json (119 opened per recording)
     start, end = meta["start"], meta.get("end") or meta["start"] + 3600
     first = min([e.get("round") for e in meta.get("rounds") or [] if e.get("round")] or [1])
     back = 15 * 60 + max(0, first - 1) * 120   # a recording that starts mid-match (the server restarted, a reconnect): its match began earlier
     best = None
     for mid in pipeline.player_matches(int(sid)):
         r = reg.get(mid) or {}
-        f = os.path.join(config.DEEP, mid, "meta.json")
-        mp = json.load(open(f, encoding="utf-8")).get("map") if os.path.exists(f) else None
+        mp = (facts.get(mid) or {}).get("map")
         if not r.get("time") or (meta.get("map") and mp and mp != meta["map"]):
             continue
         t = dt.datetime.fromisoformat(r["time"]).timestamp()

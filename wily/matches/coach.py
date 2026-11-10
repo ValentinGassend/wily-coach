@@ -32,15 +32,94 @@ class DemoGone(IOError):
     """Valve no longer has this demo (it keeps them about a month)."""
 
 
-def download(url, dest, tries=8, gone_tries=None):
+class _Unbz2:
+    """A .bz2 unpacked as its bytes come, into <dest>.part (16/10: the archive downloaded, then read again whole to
+    unpack it: 9.6 s more for a 235 MB demo, one after the other). Several streams one after the other, as bz2.open."""
+
+    def __init__(self, dest):
+        import queue
+        import threading
+        self.dest, self.part = dest, dest + ".part"
+        self.out = open(self.part, "wb")
+        self.d = bz2.BZ2Decompressor()
+        self.err = None
+        # in a thread of its own (bz2 lets the other threads run meanwhile): the download goes on while a piece unpacks
+        self.q = queue.Queue(maxsize=64)
+        self.t = threading.Thread(target=self._run, daemon=True, name="unbz2")
+        self.t.start()
+
+    def _run(self):
+        while True:
+            b = self.q.get()
+            if b is None:
+                return
+            if self.err is None:
+                try:
+                    self._unpack(b)
+                except Exception as e:
+                    self.err = e
+
+    def feed(self, data):
+        if self.err is not None:
+            raise ValueError(f"unpacking: {self.err}")
+        self.q.put(data)
+
+    def _unpack(self, data):
+        while data:
+            if self.d.eof:   # the next stream
+                self.d = bz2.BZ2Decompressor()
+            out = self.d.decompress(data)
+            if out:
+                self.out.write(out)
+            data = self.d.unused_data if self.d.eof else b""
+
+    def feed_file(self, path):
+        with open(path, "rb") as f:
+            for b in iter(lambda: f.read(1 << 20), b""):
+                self.feed(b)
+
+    def _stop(self):
+        if self.t.is_alive():
+            self.q.put(None)
+            self.t.join()
+
+    def finish(self):
+        """True when the archive ended complete: the demo is in place."""
+        self._stop()
+        self.out.close()
+        if self.err is None and self.d.eof:
+            os.replace(self.part, self.dest)
+            return True
+        self.drop()
+        return False
+
+    def drop(self):
+        self._stop()
+        try:
+            self.out.close()
+            os.remove(self.part)
+        except OSError:
+            pass
+
+
+def download(url, dest, tries=8, gone_tries=None, unpack=None):
     """Valve's replay servers sometimes drop the connection in the middle of a demo, and Python does not notice it
     (the file just ends early): check the size announced by the server and resume where it stopped.
     gone_tries: for an old match, an error before the first byte means the demo is gone after that many tries
-    (it used to wait 8 tries, about 2 minutes, for each expired demo)."""
+    (it used to wait 8 tries, about 2 minutes, for each expired demo).
+    unpack: a .bz2 also unpacked to that path as it arrives; True when it was (else unpack it afterwards)."""
     import time
     import urllib.error
     tmp = dest + ".part"
     total, err = None, None
+    un = None   # the unpacking, fed every byte written to tmp; None once it failed or isn't asked
+    if unpack:
+        try:
+            un = _Unbz2(unpack)
+            if os.path.exists(tmp):   # a download cut before this run: what it has first
+                un.feed_file(tmp)
+        except (OSError, ValueError, EOFError):
+            un = un.drop() if un else None
     for attempt in range(tries):
         have = os.path.getsize(tmp) if os.path.exists(tmp) else 0
         req = urllib.request.Request(url, headers={"Range": f"bytes={have}-"} if have else {})
@@ -54,8 +133,17 @@ def download(url, dest, tries=8, gone_tries=None):
                     cl = r.headers.get("Content-Length")
                     total = int(cl) if cl and cl.isdigit() else None
                     mode = "wb"
+                if mode == "wb" and un is not None:   # the file from its start again: so is the unpacking
+                    un.drop()
+                    un = _Unbz2(unpack)
                 with open(tmp, mode) as f:
-                    shutil.copyfileobj(r, f, 1 << 20)
+                    for b in iter(lambda: r.read(1 << 20), b""):
+                        f.write(b)
+                        if un is not None:
+                            try:
+                                un.feed(b)
+                            except (OSError, ValueError, EOFError):   # unpacked afterwards, as before
+                                un = un.drop()
             err = None
         except urllib.error.HTTPError as e:
             if e.code == 416 and have and total and have >= total:  # already complete
@@ -71,8 +159,10 @@ def download(url, dest, tries=8, gone_tries=None):
         size = os.path.getsize(tmp) if os.path.exists(tmp) else 0
         if err is None and (total is None or size >= total):
             os.replace(tmp, dest)
-            return
+            return bool(un is not None and un.finish())
         time.sleep(min(30, 2 ** attempt))
+    if un is not None:
+        un.drop()
     raise IOError(f"incomplete download after {tries} tries ({size // 1_000_000} / {(total or 0) // 1_000_000} MB){f': {err}' if err else ''}")
 
 
@@ -110,7 +200,7 @@ def process(m, keep=False):
         return
     os.makedirs(folder, exist_ok=True)
     bz = os.path.join(CACHE, f"{mid}.dem.bz2")
-    dem = os.path.join(CACHE, f"{mid}.dem")
+    dem = config.demo(mid)   # an archived demo is not fetched again
     if not os.path.exists(dem):
         log(f"[{mid}] downloading {m['url']}")
         download(m["url"], bz)

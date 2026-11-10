@@ -16,6 +16,7 @@ import json
 import os
 import re
 import threading
+import time
 
 from wily.core import config
 
@@ -23,7 +24,9 @@ LANGS = {"en": "English", "fr": "Français", "de": "Deutsch", "ru": "Русск�
 LOCALES = {"en": "en-US", "fr": "fr-FR", "de": "de-DE", "ru": "ru-RU", "pt": "pt-BR", "es": "es-419", "zh": "zh-CN"}
 DIR = os.path.join(config.HERE, "resources", "i18n")
 _CACHE = {}
-_LANG = {"m": None, "v": "en"}
+_LANG = {"m": None, "v": "en", "t": None}
+FRESH = 1.0   # s: the language and its catalog checked again at most once a second (16/10: two file dates read at each
+              # of the 15,000 tr() of an analysis, a second of it)
 _LOCK = threading.Lock()
 _PH = re.compile(r"\{(\w+)\}")
 
@@ -32,6 +35,10 @@ def catalog(lang):
     """{English: translation} of a language ({} for English or a language without its file); re-read when it changes."""
     if lang not in LANGS or lang == "en":
         return {}
+    c = _CACHE.get(lang)
+    now = time.monotonic()
+    if c and now - c[2] < FRESH:
+        return c[1]
     p = os.path.join(DIR, f"{lang}.json")
     try:
         m = os.path.getmtime(p)
@@ -39,13 +46,15 @@ def catalog(lang):
         return {}
     with _LOCK:
         c = _CACHE.get(lang)
-        if not c or c[0] != m:
+        if c and c[0] == m:
+            c = _CACHE[lang] = (m, c[1], now)
+        else:
             try:
                 with open(p, encoding="utf-8") as f:
                     data = json.load(f)
             except (OSError, ValueError):
                 data = {}
-            c = _CACHE[lang] = (m, {k: v for k, v in data.items() if not k.startswith("_") and v})
+            c = _CACHE[lang] = (m, {k: v for k, v in data.items() if not k.startswith("_") and v}, now)
     return c[1]
 
 
@@ -61,6 +70,10 @@ def from_header(h):
 def current():
     """The language the analyses write in: the player's choice, else the browser's last seen, else English (read
     again only when settings.json changes: tr() runs thousands of times in an analysis)."""
+    now = time.monotonic()
+    if _LANG["t"] is not None and now - _LANG["t"] < FRESH:
+        return _LANG["v"]
+    _LANG["t"] = now
     try:
         m = os.path.getmtime(config.SETTINGS)
     except OSError:
@@ -114,6 +127,15 @@ def day_month(t, lang=None):
     lang = lang or current()
     d, m = lt.tm_mday, lt.tm_mon
     return f"{m:02d}/{d:02d}" if lang in ("en", "zh") else f"{d:02d}.{m:02d}." if lang == "de" else f"{d:02d}/{m:02d}"
+
+
+# the thousands' separator of each language (French and Russian: a narrow no-break space)
+_THOUSANDS = {"en": ",", "fr": "\u202f", "de": ".", "ru": "\u202f", "pt": ".", "es": ".", "zh": ","}
+
+
+def num(v, lang=None):
+    """A whole number as the language writes it (21/10: "4,300 $" in French): 4,300 · 4 300 · 4.300."""
+    return f"{int(round(v)):,}".replace(",", _THOUSANDS.get(lang or current(), ","))
 
 
 def fill(s, kw):

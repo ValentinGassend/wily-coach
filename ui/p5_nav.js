@@ -17,11 +17,11 @@ function acctUpdate(){const ac=$("#acct"),ab=$("#acctbtn"),am=$("#acctmenu");if(
   const mi=D.own&&IDX()[D.own],me=D.own&&D.players[D.own];
   const av=mi?((me&&((me.advice||{}).steam||{}).avatar)||mi.avatar||(ACCT&&ACCT.avatar)):null,nm=(me&&me.name)||(mi&&mi.name)||tl("Menu");
   if(mi&&!av&&ACCT===null){ACCT={};fetch("/api/account").then(r=>r.json()).then(j=>{ACCT=j||{};if(ACCT.avatar)acctUpdate()}).catch(()=>{})}
-  ab.innerHTML=`${mi?avatarHtml(av,nm):`<span class="av ini" aria-hidden="true">☰</span>`}<span class="an">${esc(nm)}</span><span class="caret" aria-hidden="true">▾</span>`;
+  ab.innerHTML=`${mi?avatarHtml(av,nm):`<span class="av ini" aria-hidden="true">${IC("menu")}</span>`}<span class="an">${esc(nm)}</span><span class="caret" aria-hidden="true">▾</span>`;
   ab.title=mi?tl("{name}: your favorites, open a player, update, settings",{name:nm}):tl("Menu");ab.setAttribute("aria-label",ab.title);
   const im=$("img.av",ab);if(im)im.onerror=()=>{const sp=document.createElement("span");sp.className="av ini";sp.setAttribute("aria-hidden","true");sp.textContent=String(nm).trim().charAt(0).toUpperCase();im.replaceWith(sp)};   // an avatar that doesn't load: your initial
   favRender();
-  ab.onclick=e=>{e.stopPropagation();const open=am.hidden;am.hidden=!open;ab.setAttribute("aria-expanded",String(open));if(open){const f=$("a,input",am);if(f)f.focus()}};
+  ab.onclick=e=>{e.stopPropagation();langClose();const open=am.hidden;am.hidden=!open;ab.setAttribute("aria-expanded",String(open));if(open){const f=$("a,input",am);if(f)f.focus()}};
   am.onclick=e=>e.stopPropagation()}
 // favorites: profiles kept at hand (this browser); the first time, your team's players
 function favs(){const f=store("favs");return Array.isArray(f)?f:[]}
@@ -36,14 +36,34 @@ function favRender(){const box=$("#favlist");if(!box)return;favSeed();const I=ID
   $$("[data-fav]",box).forEach(a=>a.onclick=e=>{e.preventDefault();acctClose();const s=a.dataset.fav;if(s===S.player)return;
     S.view=s===D.own?"review":(["profile","matches","maps","analysis","midround","progress","routine"].includes(S.view)?S.view:"profile");setPlayer(s)})}
 function acctClose(){const am=$("#acctmenu"),ab=$("#acctbtn");if(am&&!am.hidden){am.hidden=true;if(ab)ab.setAttribute("aria-expanded","false")}}
-document.addEventListener("click",e=>{if(!e.target.closest||!e.target.closest("#acct"))acctClose()});
-document.addEventListener("keydown",e=>{if(e.key==="Escape"){const am=$("#acctmenu");if(am&&!am.hidden){acctClose();const ab=$("#acctbtn");if(ab)ab.focus()}}});
+// the app's language in the bar (20/10, the user: "passe le changement de langue dans la nav"): its code, a list of the
+// languages in their own names, your browser's first; a choice saved for the whole app, the page then loaded again in it
+const GLOBE=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z"/></svg>`;
+function langUpdate(){const lw=$("#lang"),lb=$("#langbtn"),lm=$("#langmenu");if(!lw)return;
+  lw.hidden=!D.local;if(lw.hidden)return;
+  const LG=Object.entries(D.langs||{en:"English"}),cur=D.ui_lang||"auto",name=(D.langs||{})[LANG]||LANG;
+  lb.innerHTML=`${GLOBE}<span class="lc">${esc(LANG.toUpperCase())}</span><span class="caret" aria-hidden="true">▾</span>`;
+  lb.title=tl("Language: {name}",{name});lb.setAttribute("aria-label",lb.title);
+  lm.innerHTML=`<span class="am-h">${tl("The app's language")}</span>`
+    +[["auto",tl("Your browser's language")],...LG].map(([k,x])=>`<button type="button" data-lang="${k}" aria-pressed="${cur===k}" lang="${k==="auto"?LANG:k}"><span class="ck" aria-hidden="true">${cur===k?"✓":""}</span><span>${esc(x)}</span><span class="lc">${k==="auto"?"auto":esc(k.toUpperCase())}</span></button>`).join("")
+    +`<p class="lm-note">${tl("Pages and analyses; yours written again in it in a few minutes.")}</p>`;
+  lb.onclick=e=>{e.stopPropagation();acctClose();const open=lm.hidden;lm.hidden=!open;lb.setAttribute("aria-expanded",String(open));if(open){const f=$("[aria-pressed=\"true\"]",lm)||$("button",lm);if(f)f.focus()}};
+  lm.onclick=e=>e.stopPropagation();
+  $$("[data-lang]",lm).forEach(b=>b.onclick=async()=>{if(b.dataset.lang===cur){langClose();return}
+    $$("[data-lang]",lm).forEach(x=>x.disabled=true);
+    try{const j=await api("/api/app/options",{ui_lang:b.dataset.lang});if(j.relang)try{sessionStorage.setItem("relang","1")}catch(e){}}catch(e){}
+    location.reload()})}
+function langClose(){const lm=$("#langmenu"),lb=$("#langbtn");if(lm&&!lm.hidden){lm.hidden=true;if(lb)lb.setAttribute("aria-expanded","false")}}
+function langOpen(){const lb=$("#langbtn");if(lb&&!$("#lang").hidden){window.scrollTo({top:0,behavior:"smooth"});lb.click()}}
+document.addEventListener("click",e=>{if(!e.target.closest||!e.target.closest("#acct"))acctClose();if(!e.target.closest||!e.target.closest("#lang"))langClose()});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){const am=$("#acctmenu");if(am&&!am.hidden){acctClose();const ab=$("#acctbtn");if(ab)ab.focus()}
+  const lm=$("#langmenu");if(lm&&!lm.hidden){langClose();const lb=$("#langbtn");if(lb)lb.focus()}}});
 // the focus of the week (focus.py: the coach's first axis, kept 7 days); a profile built before it: the first axis
 function focusOf(p){const A=p&&p.advice;if(!A)return null;const F=(A.plan||{}).focus;if(F&&F.short)return F;
   const r=(A.rules||[])[0];return r?{id:r.id,title:r.title,short:r.short||r.title,do:(r.do||[]).slice(0,2),drills:(r.drills||[]).slice(0,2),others:(A.rules||[]).slice(1,6).map(x=>({id:x.id,short:x.short||x.title}))}:null}
 // your profile in tabs (07/10, the user: "plein de liens différents qui redirigent vers plein de choses"): one row, the
 // same on each of its pages, instead of cards that each led somewhere else
-const PTABS=[["profile",tl("Overview")],["analysis",tl("Reads")],["midround",tl("Mid-round")],["maps",tl("Maps")],["progress",tl("Weapons & buys")],["routine",tl("Habits")]];
+const PTABS=[["profile",tl("Overview")],["maps",tl("Maps")],["analysis",tl("Reads")],["midround",tl("Mid-round")],["progress",tl("Weapons & buys")],["routine",tl("Habits")]];
 // the Live button as a camera's REC (07/10, the user: "met le bouton live beaucoup plus visible et met le en rouge avec
 // un point à côté quand il détecte une game live et qu'il est actif"): red with a blinking dot while Wily follows a match
 // (CS2 sends its state, a map is loaded, not the training server), a plain pill otherwise. A peek at the game state every
@@ -70,13 +90,13 @@ function navUpdate(view){const g=GROUP[view]||view;
   w.innerHTML=p&&PLAYER_VIEWS.includes(view)&&(other||!D.local||!D.own)?`${(other?tl("Viewing: {name}",{name:`<b>${esc(p.name)}</b>`}):tl("Profile: {name}",{name:`<b>${esc(p.name)}</b>`}))}${other&&D.local?` <button type="button" id="favme" class="fav" aria-pressed="${fav}" title="${fav?tl("In your favorites: click to remove"):tl("Add to your favorites (your menu, top right)")}">${fav?"★":"☆"}</button>`:""}${other&&IDX()[D.own]?` <button type="button" id="backme" title="${tl("Back to my profile")}">${tl("back to mine")}</button>`:""}`:"";
   const bm=$("#backme");if(bm)bm.onclick=()=>{S.view="review";setPlayer(D.own)};
   const fm=$("#favme");if(fm)fm.onclick=()=>favToggle(S.player);
-  acctUpdate();
+  acctUpdate();langUpdate();
   document.body.classList.toggle("ingame",view==="ingame")}
 // ---------- the setup guide (08/10, the user: "une façon beaucoup plus simple d'installer l'app"): a player's first
 // launch in three steps instead of Settings to explore: the Steam account of this PC, CS2 connected (game detection and
 // one launch option to paste, which also loads the numpad keys), the match history code (no Steam key to create:
 // Wily's site asks Steam), then the first analysis. Reopened from Settings ----------
-const SG={t:null},SG_LAUNCH="-condebug +exec coach_binds";
+const SG={t:null},SG_LAUNCH="-condebug +exec wily_bind";
 const sgTick=b=>`<i class="sg-tick${b?" on":""}" aria-hidden="true">${b?"✓":""}</i>`;
 async function setupGuide(v,first){clearTimeout(SG.t);if(!D.local)return;
   const get=u=>fetch(u).then(r=>r.ok?r.json():null).catch(()=>null);

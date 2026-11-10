@@ -28,14 +28,40 @@ def rating(kills, deaths, assists, adr, kast, rounds):
     return 0.0073 * kast + 0.3591 * kpr - 0.5329 * dpr + 0.2372 * impact + 0.0032 * adr + 0.1587
 
 
-def _teams(mid):
-    """{steamid: side in round 1} from the deep samples."""
-    f = os.path.join(config.DEEP, str(mid), "samples.parquet")
-    if not os.path.exists(f):
-        return {}
-    s = pd.read_parquet(f, columns=["steamid", "side", "round"])
-    s = s[s["round"] == s["round"].min()].drop_duplicates("steamid")
-    return dict(zip(s.steamid.astype("int64"), s.side))
+def digest(sid, mids):
+    """{match: what the plan reads of its positions}: its players in the first round [steamid, side, name], and the
+    player's own zones after 5 s, per side, each with its count in the order they first appear. Kept per match
+    (ledger.py), read again only when its folder changes (16/10: three modules opened each of the player's samples,
+    some of them three times, at every plan)."""
+    from wily.app import pipeline
+    from wily.core import ledger
+    sid = int(sid)
+    dirs = ledger.folders(config.DEEP)
+    ask = set(mids) | set(pipeline.player_matches(sid))   # every caller asks the same ones: the ledger keeps them all
+
+    def read(mid):
+        f = os.path.join(config.DEEP, mid, "samples.parquet")
+        if not os.path.exists(f):
+            return None
+        try:
+            s = pd.read_parquet(f, columns=["steamid", "name", "side", "round", "t", "zone"])
+        except Exception:   # an older extraction without the names
+            s = pd.read_parquet(f, columns=["steamid", "side", "round", "t", "zone"])
+        r1 = s[s["round"] == s["round"].min()].drop_duplicates("steamid")
+        names = r1["name"].tolist() if "name" in r1 else [None] * len(r1)
+        first = [[int(p), sd, nm if isinstance(nm, str) and nm else None] for p, sd, nm in zip(r1.steamid, r1.side, names)]
+        me = s[(s.steamid == sid) & (s.t >= 5) & (s.zone != "?")]
+        zones = {}
+        for side, g in me.groupby("side"):
+            n = g.zone.value_counts()
+            zones[side] = [[z, int(n[z])] for z in pd.unique(g.zone) if z == z]
+        return {"first": first, "zones": zones}
+    return ledger.per_match(f"digest_{sid}", {m: dirs[m] for m in sorted(ask) if m in dirs}, read)
+
+
+def _teams(dg):
+    """{steamid: side in round 1} from a match's digest."""
+    return {p: sd for p, sd, _ in (dg or {}).get("first") or []}
 
 
 def _local(t):
@@ -56,7 +82,9 @@ def history(steamid):
         reg = json.load(open(rp))
     out, seen = [], set()
     mdir = os.path.join(pdir, "matches")
-    for mid in os.listdir(mdir) if os.path.exists(mdir) else []:
+    mids = os.listdir(mdir) if os.path.exists(mdir) else []
+    dg = digest(sid, mids)
+    for mid in mids:
         f = os.path.join(mdir, mid, "stats.json")
         if not os.path.exists(f):
             continue
@@ -66,7 +94,7 @@ def history(steamid):
         o = st["overview"]
         start = _local(st["match"]["time"])
         dur = st["match"].get("duration_s") or (reg.get(mid) or {}).get("duration_s") or st["rounds"] * 110
-        teams = _teams(mid)
+        teams = _teams(dg.get(mid))
         me_side = teams.get(sid)
         mates = sorted(p for p, sd in teams.items() if sd == me_side and p != sid) if me_side else []
         out.append({"id": mid, "source": "demo", "start": start, "end": start + dt.timedelta(seconds=dur), "map": st["map"],

@@ -1,6 +1,6 @@
 """Rule-based coaching advice from a player's analyzed matches (works for any SteamID)."""
 from wily.insights.nades import _timer  # the game clock (1:55 at the start of the round)
-from wily.core.i18n import tr, trn
+from wily.core.i18n import num, tr, trn
 import json
 import os
 from collections import defaultdict
@@ -123,7 +123,7 @@ def rules(M, cross, per_match=False):
              tr("On attack, go in second behind a flash."), tr("On defense, play crossfires.")])
     un = M.get("nades_unused", 0)
     if un / n >= (4 if per_match else 6):
-        add("nades", un / n * 2.2, tr("{n} grenades died with you (${v})", n=int(un), v=f"{int(M.get('nades_value', 0)):,}"),
+        add("nades", un / n * 2.2, tr("{n} grenades died with you (${v})", n=int(un), v=num(M.get('nades_value', 0))),
             tr("Empty your pockets before 40 s"),
             [tr("{n} grenades not thrown when you died, out of {b} in your inventory ({p}%).", n=int(un), b=int(M.get('nades_bought', 0)), p=pct(un, M.get('nades_bought', 0))),
              "{a}: {b}, {c}.".format(a=trn(int(M.get('flash_thrown', 0)), "{n} flash thrown", "{n} flashes thrown"),

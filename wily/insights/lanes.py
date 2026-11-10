@@ -28,24 +28,43 @@ STEP, T_MAX = 5, 100
 
 
 def _maps_demos():
+    from wily.core import ledger
+    facts = ledger.match_facts()   # 15/10: not the 5,000 meta.json read again
     by = {}
     for mid in os.listdir(config.DEEP):
-        d = os.path.join(config.DEEP, mid)
-        m = midround._meta(d).get("map")
-        if m and os.path.exists(os.path.join(d, "samples.parquet")):
-            by.setdefault(m, []).append(mid)
+        f = facts.get(mid) or {}
+        if f.get("map") and f.get("samples"):
+            by.setdefault(f["map"], []).append(mid)
     return by
+
+
+_GEO = {}
 
 
 def geo(rebuild=False):
     """Per map: where each zone is (world and radar), the T spawn, the site centers, and the radar transform
-    (so the app can put your live position on the radar)."""
+    (so the app can put your live position on the radar). 16/10: kept while its 12 matches per map stay the same (the
+    number of matches of the base before: built again at each new match), and in memory for 30 s (99 calls a plan,
+    each reading the base's folder)."""
+    import time
+    try:
+        mt = os.path.getmtime(GEO)
+    except OSError:
+        mt = None
+    hit = _GEO.get("v")
+    if not rebuild and hit and hit[0] == mt and time.monotonic() - hit[1] < 30:
+        return hit[2]
     by = _maps_demos()
-    n = f"v2-{sum(len(v) for v in by.values())}"   # v2: callouts (callouts.py)
+    try:   # v2: callouts (callouts.py); v3: what it's made of, the site centers and each map's 12 first matches
+        sites = os.path.getmtime(midround.SITES)
+    except OSError:
+        sites = None
+    n = f"v3-{sites}-" + ";".join(f"{mp}:{','.join(sorted(v)[:12])}" for mp, v in sorted(by.items()))
     if os.path.exists(GEO) and not rebuild:
         try:
             cur = json.load(open(GEO, encoding="utf-8"))
             if cur.get("_n") == n or config.role() == "client":   # a player's copy: the full base's, not its own few demos' (05/10)
+                _GEO["v"] = (mt, time.monotonic(), cur)
                 return cur
         except (OSError, ValueError):
             pass
@@ -112,8 +131,8 @@ def members(paths, site, ht, trail=False):
     tag = f"Bombsite{site}"
     out, trails = [], []
     for seq in parse(paths):
+        way = []   # the zones before the i-th (16/10: kept as it goes, not rebuilt from the start at each step)
         for i, (z, t) in enumerate(seq):
-            way = [z2 for z2, t2 in seq[:i] if z2 not in SKIP and not z2.startswith("Bombsite")]
             if z == "†":
                 if ht - 10 <= t < ht and way:
                     out.append(way[-1])
@@ -127,6 +146,8 @@ def members(paths, site, ht, trail=False):
                     j0 = last[-1] if last else 0
                     trails.append({z2 for z2, _ in seq[j0:i] if z2 not in SKIP and not z2.startswith("Bombsite")})
                 break
+            if z not in SKIP and not z.startswith("Bombsite"):
+                way.append(z)
     return (out, trails) if trail else out
 
 
@@ -248,26 +269,30 @@ def classify(df, lanes, G, mem=None):
     and the lanes each attack used."""
     mem = mem or {}
     play, used = [], []
-    for idx, r in df.iterrows():
-        mp, site = r["map"], r.site
+    # 16/10: the columns read as lists, not row by row through pandas (97,845 rows)
+    col = lambda c: df[c].tolist() if c in df else [None] * len(df)
+    has_paths = "t_paths" in df
+    rows = zip(df.index, df["map"].tolist(), df.site.tolist(), col("entered"), col("hit_t"), col("t_paths"), col("stop_t"),
+               col("t_events"), col("dyn"))
+    for idx, mp, site, entered, hit_t, t_paths, stop_t, t_events, dyn in rows:
         if site not in ("A", "B"):
             play.append("none")
             used.append("")
             continue
         g = Geo(G, mp)
         L = (lanes.get(mp) or {}).get(site) or []
-        if r.entered and r.hit_t == r.hit_t:
+        if entered and hit_t == hit_t:
             zs = mem.get(idx)
-            if zs is None and "t_paths" in r:
-                zs = members(r.t_paths, site, float(r.hit_t))
+            if zs is None and has_paths:
+                zs = members(t_paths, site, float(hit_t))
             ls = [lane_of(L, g, site, z) for z in (zs or [])]
         else:   # stopped before the site: the zones of the fights of that push
-            st = r.get("stop_t")
-            evs = [e.rpartition("@") for e in str(r.t_events or "").split(";") if "@" in e]
+            st = stop_t
+            evs = [e.rpartition("@") for e in str(t_events or "").split(";") if "@" in e]
             ls = [lane_of(L, g, site, z) for z, _, t in evs if st == st and st is not None and st <= float(t) <= st + 10]
         ls = [x for x in ls if x is not None]
         distinct = sorted(set(ls))
-        if r.dyn == "rush":
+        if dyn == "rush":
             p = f"rush{site}"
         elif len(distinct) >= 2 and len(ls) >= 3:
             p = f"split{site}"
