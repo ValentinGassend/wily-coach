@@ -227,6 +227,7 @@ public partial class CoachReplay : BasePlugin
         RegisterListener<Listeners.OnMapStart>(mapName =>
         {
             rules = null;
+            TablesAsk(mapName);   // the bots' tables for this map, read while it loads (Tables.cs)
             // a drill of another map left from an ended session: forgotten, not played on this one (03/11, round 18: Anubis's
             // boost "retried" on Ancient after the change, its defense session never got a drill started)
             if (sess == null && cur != null && !string.IsNullOrEmpty(cur.Map) && !string.Equals(cur.Map, mapName, StringComparison.OrdinalIgnoreCase))
@@ -1141,7 +1142,7 @@ public partial class CoachReplay : BasePlugin
             }
         LookSay(); WalkSay(); MoveSay(); BehSay(); roams.Clear(); utilDone.Clear(); sideSeen[2].Clear(); sideSeen[3].Clear(); sideHeard[2].Clear(); sideHeard[3].Clear();
         fighters.Clear(); fightTries = 0; lookNow.Clear(); lookPick.Clear(); wayEyes.Clear(); wayK.Clear(); walkAsk.Clear(); wayBackAt.Clear(); huntProg.Clear(); navWay.Clear(); knifeOut.Clear(); sitHunt = false; foeSeenOnce = false; sitExch = -1;
-        if (scripted) { LookLoad(); MoveLoad(); BehLoad(); NavLoad(); }   // where bots look and what they do there, for this map (Look.cs, Move.cs, Behavior.cs)
+        TablesAsk();   // where bots look and what they do there, for this map (Look.cs, Move.cs, Behavior.cs): read off this thread (Tables.cs)
         kills = dmg = 0; devSum = 0; devN = 0;
         humanDead = traded = false; tradeKiller = -1;
         // the demo's plant: already down at the start, or later by its planter (yours later: you plant it yourself)
@@ -2032,6 +2033,7 @@ public partial class CoachReplay : BasePlugin
     // a player back from a drop off his team (28/10 00:22, Train's defense: kicked by an overflow as a drill began, back in
     // 5 s as a spectator; its attackers walked a site nobody held, 0 kills, the next drill never live, the session lost)
     int teamFixAt = -100000, noPawnSince = -1;
+    (string? Id, int N) cfBodyFix;   // a Crossfire given again for a player with no body: its drill, how many times
     void TeamFix()
     {
         if (sess == null || drill == null || cur == null || mode == "spec" || Server.TickCount - teamFixAt < 640) { noPawnSince = -1; return; }   // 01:02: a Momentum's too
@@ -2041,11 +2043,19 @@ public partial class CoachReplay : BasePlugin
         // retry's round restart the player read 0, 0, 0 the whole drill, 207 s, its waves walked a site nobody held; the
         // dead-player respawn never fired, the pawn "alive")
         bool AtOrigin(CCSPlayerController h) => h.PawnIsAlive && h.PlayerPawn.Value?.AbsOrigin is { } o && MathF.Abs(o.X) < 1f && MathF.Abs(o.Y) < 1f;
+        // a Crossfire's too, on its team with no body 8 s on end (10/11, round 26, Inferno's Top Mid hold: its connection timed
+        // out as the drill began, back 20 s later on its team with no body; each rep's respawn did nothing to it, the six
+        // peeks came and went unseen, "6 sans duel"; dead between two reps is the drill's own, 1.5 s at most): twice a drill
+        // at most, never a loop of restarts
+        var cfBody = phase == "live" && drill.Mode == "crossfire" && Humans().Any(h => h.TeamNum >= 2 && !h.PawnIsAlive);
+        if (cfBody && cfBodyFix.Id != drill.Id) cfBodyFix = (drill.Id, 0);
+        if (cfBody && cfBodyFix.N >= 2) cfBody = false;
         var noBody = phase == "live" && (cur.Kind is "nade" or "momentum" && Humans().Any(h => !h.PawnIsAlive)
-                                         || drill.Mode == "defend" && Humans().Any(AtOrigin));
+                                         || drill.Mode == "defend" && Humans().Any(AtOrigin)) || cfBody;
         noPawnSince = noBody ? (noPawnSince < 0 ? Server.TickCount : noPawnSince) : -1;
         var offTeam = Humans().Any(h => h.Team is CsTeam.None or CsTeam.Spectator);
-        if (!offTeam && !(noBody && Server.TickCount - noPawnSince > 3 * 64)) return;
+        if (!offTeam && !(noBody && Server.TickCount - noPawnSince > (cfBody ? 8 : 3) * 64)) return;
+        if (!offTeam && cfBody) cfBodyFix.N++;
         noPawnSince = -1;
         teamFixAt = Server.TickCount;
         Log("a player off his team in a drill: on its team, the drill again");

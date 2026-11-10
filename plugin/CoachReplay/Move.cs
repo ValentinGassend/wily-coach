@@ -15,9 +15,9 @@ namespace CoachReplay;
 
 public partial class CoachReplay
 {
-    string? moveMap;
     float moveCell = 128f, moveZ = 96f;
-    readonly Dictionary<string, (string Mv, float Share, int N, Vector3[] Way)> moveTab = new();
+    // (put in place whole once read, off the game's thread: Tables.cs; utilTab too)
+    Dictionary<string, (string Mv, float Share, int N, Vector3[] Way)> moveTab = new();
     readonly Dictionary<string, int> moveUsed = new();
     readonly Dictionary<int, int> lastShotOf = new();   // each player's last shot (the ears of the other side)
     readonly Dictionary<int, Vector3> lastShotAt = new();
@@ -32,15 +32,18 @@ public partial class CoachReplay
     readonly Dictionary<int, Roam> roams = new();
     // tools/danger_util.py: what grenade players throw from a cell, by side and moment of the round, one real throw of it
     // (spot, view, technique, where it landed, its flight) and what it did on average
-    readonly Dictionary<string, (string Type, float Share, int N, float[] Thr, float Dmg, float Blind, float Kills)> utilTab = new();
+    Dictionary<string, (string Type, float Share, int N, float[] Thr, float Dmg, float Blind, float Kills)> utilTab = new();
     readonly HashSet<string> utilDone = new();   // a bot's grenade thrown this drill: "slot|type"
 
-    void MoveLoad()
+    // read on the tables' thread (Tables.cs), nothing of the plugin's touched there; what it returns puts them in place, on
+    // the game's thread
+    Action MoveRead(string dir, string mp)
     {
-        var mp = Server.MapName;
-        if (mp == moveMap) return;
-        moveMap = mp; moveTab.Clear(); roams.Clear(); utilTab.Clear();
-        var ufn = Path.Combine(Dir, "util", $"{mp}.json");
+        var tab = new Dictionary<string, (string Mv, float Share, int N, Vector3[] Way)>();
+        var util = new Dictionary<string, (string Type, float Share, int N, float[] Thr, float Dmg, float Blind, float Kills)>();
+        float cell = 128f, z = 96f;
+        var said = new List<string>();
+        var ufn = Path.Combine(dir, "util", $"{mp}.json");
         if (File.Exists(ufn))
         {
             try
@@ -53,30 +56,32 @@ public partial class CoachReplay
                     var v = k.Value;
                     var thr = v.GetProperty("throw").EnumerateArray().Select(x => x.ValueKind switch
                     { JsonValueKind.True => 1f, JsonValueKind.False => 0f, JsonValueKind.Number => x.GetSingle(), _ => 0f }).ToArray();
-                    utilTab[k.Name] = (v.GetProperty("type").GetString() ?? "", v.GetProperty("share").GetSingle(), v.GetProperty("n").GetInt32(), thr,
-                                       v.GetProperty("damage").GetSingle(), v.GetProperty("blind").GetSingle(), v.GetProperty("kills").GetSingle());
+                    util[k.Name] = (v.GetProperty("type").GetString() ?? "", v.GetProperty("share").GetSingle(), v.GetProperty("n").GetInt32(), thr,
+                                    v.GetProperty("damage").GetSingle(), v.GetProperty("blind").GetSingle(), v.GetProperty("kills").GetSingle());
                 }
-                Log("move: {n} throw places read for {m}", utilTab.Count, mp);
+                said.Add($"move: {util.Count} throw places read for {mp}");
             }
-            catch (Exception e) { Log("move: util {m}", e.Message); }
+            catch (Exception e) { said.Add($"move: util {e.Message}"); }
         }
-        var fn = Path.Combine(Dir, "move", $"{mp}.json");
-        if (!File.Exists(fn)) { Log("move: no table for {m}", mp); return; }
-        try
-        {
-            using var doc = JsonDocument.Parse(File.ReadAllText(fn));
-            var r = doc.RootElement;
-            if (r.TryGetProperty("cell", out var ce)) moveCell = ce.GetSingle();
-            if (r.TryGetProperty("zcell", out var ze)) moveZ = ze.GetSingle();
-            foreach (var k in r.GetProperty("keys").EnumerateObject())
+        var fn = Path.Combine(dir, "move", $"{mp}.json");
+        if (!File.Exists(fn)) said.Add($"move: no table for {mp}");
+        else
+            try
             {
-                var v = k.Value;
-                var way = v[3].EnumerateArray().Select(p => new Vector3(p[0].GetSingle(), p[1].GetSingle(), p[2].GetSingle())).ToArray();
-                moveTab[k.Name] = (v[0].GetString() ?? "h", v[1].GetSingle(), v[2].GetInt32(), way);
+                using var doc = JsonDocument.Parse(File.ReadAllText(fn));
+                var r = doc.RootElement;
+                if (r.TryGetProperty("cell", out var ce)) cell = ce.GetSingle();
+                if (r.TryGetProperty("zcell", out var ze)) z = ze.GetSingle();
+                foreach (var k in r.GetProperty("keys").EnumerateObject())
+                {
+                    var v = k.Value;
+                    var way = v[3].EnumerateArray().Select(p => new Vector3(p[0].GetSingle(), p[1].GetSingle(), p[2].GetSingle())).ToArray();
+                    tab[k.Name] = (v[0].GetString() ?? "h", v[1].GetSingle(), v[2].GetInt32(), way);
+                }
+                said.Add($"move: {tab.Count} cases read for {mp}");
             }
-            Log("move: {n} cases read for {m}", moveTab.Count, mp);
-        }
-        catch (Exception e) { Log("move: {m}", e.Message); }
+            catch (Exception e) { said.Add($"move: {e.Message}"); }
+        return () => { moveTab = tab; utilTab = util; moveCell = cell; moveZ = z; foreach (var line in said) Log("{m}", line); };
     }
 
     void MoveEvents()

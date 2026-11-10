@@ -112,6 +112,7 @@ public partial class CoachReplay
             }
             scripted = on;
             Log("scripted: {s}", on ? "on" : "off");
+            if (on) TablesAsk();   // this map's tables for them, read off this thread (Tables.cs)
         });
         AddCommand("css_dbglook", "one bot on its way traced tick by tick: its eyes before and after the plugin and its command: css_dbglook [ticks]", (p, c) =>
         {

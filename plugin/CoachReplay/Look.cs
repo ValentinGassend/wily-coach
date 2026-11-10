@@ -17,41 +17,46 @@ namespace CoachReplay;
 
 public partial class CoachReplay
 {
-    string? lookMap;
     float lookCell = 128f, lookZ = 96f;
-    readonly Dictionary<string, (int N, (float Yaw, float Pitch, int C)[] Bins)> lookTab = new();   // its most looked-at directions
-    readonly Dictionary<string, int[]> dangerTab = new();   // a cell and side: where its players' killers stood (8 sectors), its deaths
+    // (the two tables put in place whole once read, off the game's thread: Tables.cs)
+    Dictionary<string, (int N, (float Yaw, float Pitch, int C)[] Bins)> lookTab = new();   // its most looked-at directions
+    Dictionary<string, int[]> dangerTab = new();   // a cell and side: where its players' killers stood (8 sectors), its deaths
     readonly Dictionary<int, Vector3> lookNow = new();   // each bot's head now (pitch, yaw)
     readonly Dictionary<int, (Vector3 Want, int T, string Know)> lookPick = new();   // where it chose to look, when, knowing what
     readonly Dictionary<string, int> lookUsed = new();   // this drill's looks by where they came from (the table's knowledge, or the demo's)
     int youShotAt = -100000; Vector3 youShotFrom;          // your last shot, for the ears of the bots
 
-    void LookLoad()
+    // read on the tables' thread (Tables.cs), nothing of the plugin's touched there; what it returns puts them in place, on
+    // the game's thread
+    Action LookRead(string dir, string mp)
     {
-        var mp = Server.MapName;
-        if (mp == lookMap) return;
-        lookMap = mp; lookTab.Clear(); lookNow.Clear(); lookPick.Clear(); dangerTab.Clear();
-        var fn = Path.Combine(Dir, "look", $"{mp}.json");
-        if (!File.Exists(fn)) { Log("look: no table for {m}", mp); return; }
-        try
-        {
-            using var doc = JsonDocument.Parse(File.ReadAllText(fn));
-            var r = doc.RootElement;
-            if (r.TryGetProperty("cell", out var ce)) lookCell = ce.GetSingle();
-            if (r.TryGetProperty("zcell", out var ze)) lookZ = ze.GetSingle();
-            foreach (var k in r.GetProperty("keys").EnumerateObject())
-                lookTab[k.Name] = (k.Value[0].GetInt32(), k.Value[1].EnumerateArray().Select(b => (b[0].GetSingle(), b[1].GetSingle(), b[2].GetInt32())).ToArray());
-            Log("look: {n} places read for {m}", lookTab.Count, mp);
-            var dfn = Path.Combine(Dir, "danger", $"{mp}.json");   // tools/danger_util.py: where the killers stood
-            if (File.Exists(dfn))
+        var tab = new Dictionary<string, (int N, (float Yaw, float Pitch, int C)[] Bins)>();
+        var danger = new Dictionary<string, int[]>();
+        float cell = 128f, z = 96f;
+        var said = new List<string>();
+        var fn = Path.Combine(dir, "look", $"{mp}.json");
+        if (!File.Exists(fn)) said.Add($"look: no table for {mp}");
+        else
+            try
             {
-                using var dd = JsonDocument.Parse(File.ReadAllText(dfn));
-                foreach (var k in dd.RootElement.GetProperty("keys").EnumerateObject())
-                    dangerTab[k.Name] = k.Value.EnumerateArray().Select(x => x.GetInt32()).ToArray();
-                Log("look: {n} danger cells read for {m}", dangerTab.Count, mp);
+                using var doc = JsonDocument.Parse(File.ReadAllText(fn));
+                var r = doc.RootElement;
+                if (r.TryGetProperty("cell", out var ce)) cell = ce.GetSingle();
+                if (r.TryGetProperty("zcell", out var ze)) z = ze.GetSingle();
+                foreach (var k in r.GetProperty("keys").EnumerateObject())
+                    tab[k.Name] = (k.Value[0].GetInt32(), k.Value[1].EnumerateArray().Select(b => (b[0].GetSingle(), b[1].GetSingle(), b[2].GetInt32())).ToArray());
+                said.Add($"look: {tab.Count} places read for {mp}");
+                var dfn = Path.Combine(dir, "danger", $"{mp}.json");   // tools/danger_util.py: where the killers stood
+                if (File.Exists(dfn))
+                {
+                    using var dd = JsonDocument.Parse(File.ReadAllText(dfn));
+                    foreach (var k in dd.RootElement.GetProperty("keys").EnumerateObject())
+                        danger[k.Name] = k.Value.EnumerateArray().Select(x => x.GetInt32()).ToArray();
+                    said.Add($"look: {danger.Count} danger cells read for {mp}");
+                }
             }
-        }
-        catch (Exception e) { Log("look: {m}", e.Message); }
+            catch (Exception e) { said.Add($"look: {e.Message}"); }
+        return () => { lookTab = tab; dangerTab = danger; lookCell = cell; lookZ = z; foreach (var line in said) Log("{m}", line); };
     }
 
     // what this drill's looks came from, said once it is over (and cleared)

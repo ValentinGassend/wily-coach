@@ -1388,22 +1388,34 @@ def _post_name(mp, h, letter=""):
     return h["zone"]
 
 
+# a walk-on this many times the straight line, and this much longer, is a way round the map, not a way in (10/11, round
+# 26, Overpass's B Connector post: three of its four attackers cut 640 u from it, by the B site, walked on 7,400 u round
+# the whole map, the mesh's way never climbing a step over 18 u; 36 s before they came near, then from the top of the
+# stairs behind it, 120 u over it; elsewhere a post's attackers come within 500 u in 2 to 16 s)
+DETOUR = (2.5, 1200.0)
+
+
 def _toward(mp, path, spot, short=32.0, speed=215.0, poly=None):
     """A cut real hit walked on to the zone it attacks (27/10, the user: "les défenses de zone sont supposées rester dans
     les zones ... le problème est le comportement des adversaires qui ne se dirigent pas vers la zone": their ways ended
     by it, the bots then put away far off or left to the game's own roaming): from its last frame the mesh's way to the
     spot, `short` u short of it, at a rifle's walk (32 frames a second, as the demo's), turned the way it goes (16:58, Nuke:
     stopped 150 u short, the defender hidden in its zone, 18 waves taken off unseen: into the zone, to the post itself).
-    -> the path's frames with the walk added (as they were when there is no way)."""
+    -> the path's frames with the walk added (as they were when there is no way); None when the mesh's way there goes
+    round the map (DETOUR): that hit attacks another place, it is left out."""
     from wily.training import navmesh
     if not mp or len(path) < 10:
         return path
     last = path[-5:-2]
     out = list(path)
-    if math.dist(last[:2], spot[:2]) > short + 40:
+    d0 = math.dist(last[:2], spot[:2])
+    if d0 > short + 40:
         W = navmesh.route(mp, last, spot)
         if len(W) < 2:
             return path
+        way = sum(math.dist(a[:2], b[:2]) for a, b in zip(W, W[1:]))
+        if way > DETOUR[0] * d0 and way > d0 + DETOUR[1]:
+            return None
         out += _walk(W, speed, short)
     # then it clears the zone (27/10 19:00, Vertigo B: at the post, the defender hidden in his zone, left to the game it
     # walked off, 12 waves taken off unseen)
@@ -1513,7 +1525,10 @@ def _defense_tracks(hits, spot, n=24, foes=None, mp=None, poly=None):
         steep = np.r_[np.abs(np.diff(P[:, 2])) > 2.5, False]   # a takeoff or a stair: its next frames climb or drop
         while k < end - 40 and (air[k] or steep[k:k + 3].any()):
             k += 1
-        cut.append({"zone": t["zone"], "path": _toward(mp, t["path"][5 * k:5 * end], spot, poly=poly),
+        way = _toward(mp, t["path"][5 * k:5 * end], spot, poly=poly)
+        if way is None:   # its way to the spot round the map (10/11): it attacks somewhere else
+            continue
+        cut.append({"zone": t["zone"], "path": way,
                     "nades": [dict(nd, f=nd["f"] - k) for nd in t.get("nades") or [] if k <= nd["f"] < end]})
     by = {}
     for t in cut:

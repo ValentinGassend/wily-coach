@@ -16,7 +16,6 @@ namespace CoachReplay;
 
 public partial class CoachReplay
 {
-    string? behMap;
     float behCell = 128f, behZ = 96f;
     sealed class BehCase
     {
@@ -26,42 +25,46 @@ public partial class CoachReplay
         public float MvShare;
         public Vector3[] Way = Array.Empty<Vector3>();
     }
-    readonly Dictionary<string, BehCase> behTab = new();
+    Dictionary<string, BehCase> behTab = new();   // put in place whole once read, off the game's thread (Tables.cs)
     // each side's knowledge of the other: an enemy's slot -> (tick, where) of its last sight by one of the side / its last
     // sound one of the side could hear
     readonly Dictionary<int, Dictionary<int, (int T, Vector3 P)>> sideSeen = new() { [2] = new(), [3] = new() };
     readonly Dictionary<int, Dictionary<int, (int T, Vector3 P)>> sideHeard = new() { [2] = new(), [3] = new() };
     readonly Dictionary<string, int> behUsed = new();
 
-    void BehLoad()
+    // read on the tables' thread (Tables.cs), nothing of the plugin's touched there; what it returns puts it in place, on the
+    // game's thread
+    Action BehRead(string dir, string mp)
     {
-        var mp = Server.MapName;
-        if (mp == behMap) return;
-        behMap = mp; behTab.Clear();
-        var fn = Path.Combine(Dir, "behavior", $"{mp}.json");
-        if (!File.Exists(fn)) { Log("behavior: no table for {m}", mp); return; }
-        try
-        {
-            using var doc = JsonDocument.Parse(File.ReadAllText(fn));
-            var r = doc.RootElement;
-            if (r.TryGetProperty("cell", out var ce)) behCell = ce.GetSingle();
-            if (r.TryGetProperty("zcell", out var ze)) behZ = ze.GetSingle();
-            foreach (var k in r.GetProperty("keys").EnumerateObject())
+        var tab = new Dictionary<string, BehCase>();
+        float cell = 128f, z = 96f;
+        var said = new List<string>();
+        var fn = Path.Combine(dir, "behavior", $"{mp}.json");
+        if (!File.Exists(fn)) said.Add($"behavior: no table for {mp}");
+        else
+            try
             {
-                var v = k.Value;
-                behTab[k.Name] = new BehCase
+                using var doc = JsonDocument.Parse(File.ReadAllText(fn));
+                var r = doc.RootElement;
+                if (r.TryGetProperty("cell", out var ce)) cell = ce.GetSingle();
+                if (r.TryGetProperty("zcell", out var ze)) z = ze.GetSingle();
+                foreach (var k in r.GetProperty("keys").EnumerateObject())
                 {
-                    N = v.GetProperty("n").GetInt32(),
-                    Look = v.GetProperty("look").EnumerateArray().Select(b => (b[0].GetSingle(), b[1].GetSingle(), b[2].GetInt32())).ToArray(),
-                    Why = v.GetProperty("why").GetString() ?? "",
-                    Mv = v.GetProperty("mv").GetString() ?? "h",
-                    MvShare = v.GetProperty("mv_share").GetSingle(),
-                    Way = v.GetProperty("way").EnumerateArray().Select(p => new Vector3(p[0].GetSingle(), p[1].GetSingle(), p[2].GetSingle())).ToArray(),
-                };
+                    var v = k.Value;
+                    tab[k.Name] = new BehCase
+                    {
+                        N = v.GetProperty("n").GetInt32(),
+                        Look = v.GetProperty("look").EnumerateArray().Select(b => (b[0].GetSingle(), b[1].GetSingle(), b[2].GetInt32())).ToArray(),
+                        Why = v.GetProperty("why").GetString() ?? "",
+                        Mv = v.GetProperty("mv").GetString() ?? "h",
+                        MvShare = v.GetProperty("mv_share").GetSingle(),
+                        Way = v.GetProperty("way").EnumerateArray().Select(p => new Vector3(p[0].GetSingle(), p[1].GetSingle(), p[2].GetSingle())).ToArray(),
+                    };
+                }
+                said.Add($"behavior: {tab.Count} cases read for {mp}");
             }
-            Log("behavior: {n} cases read for {m}", behTab.Count, mp);
-        }
-        catch (Exception e) { Log("behavior: {m}", e.Message); }
+            catch (Exception e) { said.Add($"behavior: {e.Message}"); }
+        return () => { behTab = tab; behCell = cell; behZ = z; foreach (var line in said) Log("{m}", line); };
     }
 
     // the game's footsteps this drill, the bots' and yours (30/10: running bots unheard? said in the log at each drill's end)

@@ -569,29 +569,55 @@ public partial class CoachReplay
         AddCommand("css_dbglosfile", "the bullet's lines listed in coach/los_in.json, answered in coach/los_out.json", (p, c) =>
         {
             if (p != null) return;
-            var ign = Utilities.GetPlayers().FirstOrDefault(x => x.PlayerPawn.Value != null)?.PlayerPawn.Value;
-            if (ign == null) { Server.ExecuteCommand("bot_quota 1"); Server.ExecuteCommand("bot_add_t"); Log("dbglosfile: no player, a bot added: again"); return; }
-            try
+            // its two files read and written off the game's thread, its lines traced on it (10/11, rounds 25-26: the test client
+            // asks it a hundred times a defense; 22 of the server's 40 frames over 200 ms on 04/11 and 31 of 66 on 10/11 came
+            // with one, up to 1.0 s: the files' reads, writes and renames, on a busy disk)
+            var dir = Dir;
+            float[][] Read() => JsonSerializer.Deserialize<float[][]>(System.IO.File.ReadAllText(System.IO.Path.Combine(dir, "los_in.json"))) ?? Array.Empty<float[]>();
+            void Answer(float[][] rows)
             {
-                var rows = JsonSerializer.Deserialize<float[][]>(System.IO.File.ReadAllText(System.IO.Path.Combine(Dir, "los_in.json"))) ?? Array.Empty<float[]>();
-                var opt = new CounterStrikeSharp.API.Modules.Utils.TraceOptions { InteractsWith = CounterStrikeSharp.API.Modules.Utils.Masks.ShotBrushOnly };
-                // a 7th number 1: what stops a player instead (27/10, Inferno's Second Mid: its balcony's railing and the clips
-                // under it let bullets through, the driver stood on them; tools/jump_probe.py)
-                var optMe = new CounterStrikeSharp.API.Modules.Utils.TraceOptions { InteractsWith = CounterStrikeSharp.API.Modules.Utils.Masks.PlayerSolidBrushOnly };
-                var res = new float[rows.Length];
-                for (int i = 0; i < rows.Length; i++)
+                var ign = Utilities.GetPlayers().FirstOrDefault(x => x.PlayerPawn.Value != null)?.PlayerPawn.Value;
+                if (ign == null) { Server.ExecuteCommand("bot_quota 1"); Server.ExecuteCommand("bot_add_t"); Log("dbglosfile: no player, a bot added: again"); return; }
+                try
                 {
-                    var r = rows[i];
-                    res[i] = r.Length < 6 ? -1f : CounterStrikeSharp.API.Modules.Utils.Trace.TraceEndShape(
-                        new CounterStrikeSharp.API.Modules.Utils.Vector(r[0], r[1], r[2]), new CounterStrikeSharp.API.Modules.Utils.Vector(r[3], r[4], r[5]), ign,
-                        r.Length >= 7 && r[6] == 1f ? optMe : opt).Fraction;
+                    var opt = new CounterStrikeSharp.API.Modules.Utils.TraceOptions { InteractsWith = CounterStrikeSharp.API.Modules.Utils.Masks.ShotBrushOnly };
+                    // a 7th number 1: what stops a player instead (27/10, Inferno's Second Mid: its balcony's railing and the clips
+                    // under it let bullets through, the driver stood on them; tools/jump_probe.py)
+                    var optMe = new CounterStrikeSharp.API.Modules.Utils.TraceOptions { InteractsWith = CounterStrikeSharp.API.Modules.Utils.Masks.PlayerSolidBrushOnly };
+                    var res = new float[rows.Length];
+                    for (int i = 0; i < rows.Length; i++)
+                    {
+                        var r = rows[i];
+                        res[i] = r.Length < 6 ? -1f : CounterStrikeSharp.API.Modules.Utils.Trace.TraceEndShape(
+                            new CounterStrikeSharp.API.Modules.Utils.Vector(r[0], r[1], r[2]), new CounterStrikeSharp.API.Modules.Utils.Vector(r[3], r[4], r[5]), ign,
+                            r.Length >= 7 && r[6] == 1f ? optMe : opt).Fraction;
+                    }
+                    var text = JsonSerializer.Serialize(res);
+                    void Write()
+                    {
+                        try
+                        {
+                            var tmp = System.IO.Path.Combine(dir, "los_out.json.tmp");
+                            System.IO.File.WriteAllText(tmp, text);
+                            System.IO.File.Move(tmp, System.IO.Path.Combine(dir, "los_out.json"), true);
+                        }
+                        catch (Exception) { }
+                    }
+                    if (!Io(Write)) Write();
+                    Log("dbglosfile: {n} lines", rows.Length);
                 }
-                var tmp = System.IO.Path.Combine(Dir, "los_out.json.tmp");
-                System.IO.File.WriteAllText(tmp, JsonSerializer.Serialize(res));
-                System.IO.File.Move(tmp, System.IO.Path.Combine(Dir, "los_out.json"), true);
-                Log("dbglosfile: {n} lines", rows.Length);
+                catch (Exception e) { Log("dbglosfile: {m}", e.Message); }
             }
-            catch (Exception e) { Log("dbglosfile: {m}", e.Message); }
+            if (!Io(() =>
+                {
+                    float[][] rows;
+                    try { rows = Read(); }
+                    catch (Exception e) { var m = e.Message; OnGame(() => Log("dbglosfile: {m}", m)); return; }
+                    OnGame(() => Answer(rows));
+                }))
+            {   // no io thread (the plugin going down): as before, here
+                try { Answer(Read()); } catch (Exception e) { Log("dbglosfile: {m}", e.Message); }
+            }
         });
         // a bullet's line between two points (23/10 eve: Crossfire's starts seen from their spot): css_dbglos x y z x y z
         AddCommand("css_dbglos", "a bullet's line between two points: css_dbglos x1 y1 z1 x2 y2 z2 [tag]", (p, c) =>
