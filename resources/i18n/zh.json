@@ -3557,5 +3557,10 @@
  "site kept {s} s of {t}": "包点守住 {s} 秒，共 {t} 秒",
  "stuff +{p}: {b} blinded, {d} HP, {k} killed blinded": "道具 +{p}：致盲 {b} 人，{d} 伤害，击杀致盲敌人 {k} 次",
  "teammates: {hp}": "队友：{hp}",
- "{n} stepped off their angles": "{n} 个离开了角度"
+ "{n} stepped off their angles": "{n} 个离开了角度",
+ "SITE TAKEN": "包点失守",
+ "after the flash: the flash goes last": "在闪光之后：闪光要最后扔",
+ "wave {w} · {h} held": "第{w}波 · 守住{h}波",
+ "{h} waves held of {n}": "{n}波守住{h}波",
+ "{k} kills ({p} a wave)": "{k}个击杀（每波{p}个）"
 }

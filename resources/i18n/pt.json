@@ -3819,5 +3819,10 @@
  "{n} stepped off their angles": {
   "one": "{n} saiu do ângulo",
   "other": "{n} saíram dos ângulos"
- }
+ },
+ "SITE TAKEN": "BOMB TOMADO",
+ "after the flash: the flash goes last": "depois da flash: a flash vai por último",
+ "wave {w} · {h} held": "onda {w} · {h} seguradas",
+ "{h} waves held of {n}": "{h} ondas seguradas de {n}",
+ "{k} kills ({p} a wave)": "{k} kills ({p} por onda)"
 }
