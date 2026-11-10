@@ -1925,13 +1925,6 @@ def scope_up(timeout=0.9):
     clicked only when the server says it is down, checked again, steady 0.35 s once up. -> True when up."""
     t0, clicked = time.time(), 0.0
     foes()
-    # its bolt first, no click in it (10/11: fight() comes back 0.2 s after an AWP's shot, its bolt spent out of their sight;
-    # a click in the bolt is lost, one as the game zooms back in by itself takes the scope off): then the game's own zoom
-    if (LIVE.get("me_ready") or 0) > 0.02:
-        gun_ready(timeout=1.6)
-        time.sleep(0.15)
-        foes()
-        t0 = time.time()
     # up and steady already (02/11, round 16, Fachwerk's AWP: held scoped, 0.35 s more before each shot, "in 0.35 s" every
     # time, the bots' whole reaction): at once
     if LIFE.get("scoped") and time.time() - LIFE.get("scoped_at", time.time()) >= 0.35:
@@ -2290,9 +2283,10 @@ def fight(sniper=False, timeout=6.0, reach=None, pump=None, far_switch=False):
             # the weapon's accuracy back before the next tap: far off, a 0.25 s rest left the bullets 8 u around the head
             # at 850 u (26/10, Boulder's pistols)
             # a pump shotgun fires once in 0.85 s: a click before that is lost (26/10: "no impact" every other shot)
-            # an AWP: its shot's outcome read, its bolt (1.46 s) left to the caller, spent out of their sight (10/11, rounds 23-26:
-            # 44 of its 83 deaths with the AWP came within 1.5 s of its own shot, standing in their sight through the bolt)
-            rest = 0.2 if sniper else pump if pump else 0.4 if far else 0.25
+            # an AWP's bolt: 1.46 s, slept here (10/11: a night with the bolt left to the caller, walked out of their sight
+            # meanwhile, whatever their distance: its kills for a death fell from 4.0 to 2.5 on round 27's first four maps while
+            # the rifle's and the pistol's rose; taken back)
+            rest = 1.5 if sniper else pump if pump else 0.4 if far else 0.25
             if sniper or pump or revolver():
                 time.sleep(rest)
             else:
@@ -2356,11 +2350,6 @@ def fight(sniper=False, timeout=6.0, reach=None, pump=None, far_switch=False):
                   + f"(in {t_in - FIRST.get(b['slot'], t_in):.2f}, stop {t_st - t_in:.2f}, settle {t_se - t_st:.2f}), scoped {sc_before} as it left, "
                   f"you at {math.hypot(v_me[0], v_me[1]):.0f} u/s {v_me[2]:+.0f} up{'' if gnd in (None, True) else ' OFF THE GROUND'}, "
                   f"hp {hp0} -> {cur.get('hp') if cur else 'down'}, you {'alive' if LIFE.get('alive', True) else 'DOWN'}{lost}", flush=True)
-        if sniper:   # one shot a call (10/11): the next one waits for its bolt anyway (gun_ready), the caller hides meanwhile
-            if cur is None:
-                down += 1
-                MISS.pop(b["slot"], None)
-            break
         if cur is None:
             down += 1
             MISS.pop(b["slot"], None)
