@@ -64,7 +64,7 @@ DL = {
            "smart": "Si Windows muestra <i>\"Windows protegió su PC\"</i>: haz clic en <b>Más información</b> y luego en <b>Ejecutar de todas formas</b>. La app todavía no está firmada con un certificado de pago; cada parte que descarga se verifica con la firma de su autor.",
            "sha_setup": "SHA-256 del instalador", "or_zip": "o <a href=\"{href}\" download>el zip</a> ({mb} MB, para descomprimir tú mismo)",
            "linux": "<b>Linux</b> (repaso de partidas y En vivo; el servidor de entrenamiento es experimental ahí, se activa en Ajustes): descarga <a href=\"{href}\" download>wily-linux.sh</a> y luego, en una terminal, <code>sh wily-linux.sh</code> (Python 3.11 o más reciente). SHA-256: <span class=\"mono\">{sha}</span>",
-           "sep": ",", "date": "%d/%m/%Y"},
+           "sep": ".", "date": "%d/%m/%Y"},
     "zh": {"btn": "下载Windows版Wily", "zip_btn": "下载Windows版 · {mb} MB", "ver": "版本 {app} · {when} · 数据库共{n}场比赛",
            "parts": "安装程序会下载{mb} MB",
            "smart": "如果Windows显示<i>“Windows 已保护你的电脑”</i>：点击<b>更多信息</b>，然后点击<b>仍要运行</b>。本应用尚未使用付费证书签名；它下载的每个部分都会用作者的签名校验。",
@@ -77,11 +77,11 @@ DL = {
 def home_ru(C, dl):
     return f"""
 <h1>Привет, я Wily.</h1>
-<p class="lede">Твой коуч по CS2 на втором экране. Я заново проигрываю твои настоящие смерти с ботами, чтобы ты переиграл дуэль, даю советы в реальном времени во время матчей и честно говорю, что исправить после. Я учусь на твоих демках и на базе из тысяч матчей. Бесплатная альфа с открытым кодом для Windows и Linux: первая версия, открытая для всех, так что шероховатости будут.</p>
+<p class="lede">Твой коуч по CS2. Я ставлю ботов ровно туда, где тебя убили в твоих настоящих матчах, прямо в CS2, чтобы ты переигрывал дуэль, пока не выиграешь. Во время матчей я даю советы в реальном времени на втором экране, а после честно говорю, что исправить. Я учусь на твоих демках и на базе из тысяч матчей. Бесплатная альфа с открытым кодом для Windows и Linux: первая версия, открытая для всех, так что шероховатости будут.</p>
 <section id="download">{dl}<p class="note"><b>Открытый код</b> (Apache 2.0): весь код приложения на <a href="{C['github']}">GitHub</a>. Каждая версия публикуется и там, с тем же SHA-256, что на этой странице, и привязана к точному коммиту, из которого собрана: <a href="{C['github']}/releases">версии</a>.</p></section>
 <div class="grid">
  <article class="card"><span class="eyebrow">Live</span><h3>Во время матча</h3><ul><li>Что купить в этом раунде и в следующем</li><li>Куда, скорее всего, пойдут T — с учётом таймера и того, что ты видишь</li><li>Твои пути и сильные точки на радаре, гранаты, которые стоит кинуть сейчас</li></ul></article>
- <article class="card"><span class="eyebrow">Подготовка</span><h3>Перед игрой</h3><ul><li>Разминка по таймеру на твоих слабых местах (от 5 до 45 мин)</li><li>Сервер тренировок с ботами, которые повторяют твои настоящие смерти и клатчи</li></ul></article>
+ <article class="card"><span class="eyebrow">Подготовка</span><h3>Перед игрой</h3><ul><li>Разминка на твоих слабых местах, от 5 минут (до 45)</li><li>Сервер тренировок с ботами, которые повторяют твои настоящие смерти и клатчи</li></ul></article>
  <article class="card"><span class="eyebrow">Разбор</span><h3>После сессии</h3><ul><li>Что изменилось по сравнению с прошлыми матчами и почему</li><li>Твой фокус недели и эксперименты, которые стоит попробовать</li><li>Каждый матч по раундам</li></ul></article>
 </div>
 <h2 id="see">Как это выглядит</h2>
@@ -95,9 +95,9 @@ def home_ru(C, dl):
 <ol class="steps">
  <li>Открой <b>WilySetup.exe</b>, затем <b>Install</b>: он скачает меня, проверит каждую часть и установит для твоей учётной записи Windows (без прав администратора). Я запускаюсь вместе с Windows и сам открываю Live, когда запускается CS2.</li>
  <li>При первом запуске три шага: твой аккаунт Steam (я его нахожу), подключение CS2 (вставить один параметр запуска), код истории матчей (ключ Steam создавать не нужно). Потом твои матчи анализируются на твоём ПК, по несколько минут каждый.</li>
- <li>Подготовка → <b>Разминка</b>: сервер тренировок устанавливается сам при первом запуске (отдельная копия CS2 рядом с игрой, ссылки на её файлы, без лишнего места на диске).</li>
+ <li>Подготовка → <b>Разминка</b>: сервер тренировок устанавливается, только когда ты впервые его открываешь, и работает на файлах твоей CS2 (ссылки: без второй загрузки, без лишнего места на диске).</li>
 </ol>
-<p class="note">Нужны Windows 10 или 11 (64 бита) или Linux (Python 3.11+), CS2 в Steam, 8 ГБ оперативной памяти и место для твоих демок (около 250 МБ на матч). Приложение говорит на русском, английском, французском, немецком, португальском, испанском и китайском.</p>
+<p class="note">Нужны Windows 10 или 11 (64 бита) или Linux (Python 3.11+), CS2 в Steam, ПК с 8 ГБ оперативной памяти (для игры и Wily вместе) и место для твоих демок (около 250 МБ на матч). Приложение говорит на русском, английском, французском, немецком, португальском, испанском и китайском.</p>
 <h2>Честная игра и конфиденциальность</h2>
 <div class="grid">
  <article class="card"><h3>Только то, что даёт Valve</h3><p>Game State Integration (официальная функция игры для HUD и RGB-клавиатур), лог консоли, который пишет CS2, Steam Web API, демки твоих матчей. Я никогда не читаю память игры и её сетевой трафик и никогда не играю за тебя. Сервер тренировок — локальная копия игры, в которую заходишь только ты. Всё это можно проверить: <a href="{C['github']}">код открыт</a>.</p></article>
@@ -110,11 +110,11 @@ def home_ru(C, dl):
 def home_pt(C, dl):
     return f"""
 <h1>Oi, eu sou o Wily.</h1>
-<p class="lede">Seu coach de CS2 na segunda tela. Eu repito suas mortes de verdade com bots para você jogar o duelo de novo, dou dicas ao vivo durante as suas partidas e te digo com clareza o que corrigir depois. Eu aprendo com as suas demos e com uma base de milhares de partidas. Alpha grátis e open source para Windows e Linux: a primeira versão aberta a todos, então ainda tem arestas para aparar.</p>
+<p class="lede">Seu coach de CS2. Eu coloco bots exatamente onde te mataram nas suas partidas de verdade, dentro do próprio CS2, para você jogar o duelo de novo até vencer. Durante as partidas, dou dicas ao vivo na sua segunda tela e, depois, te digo com clareza o que corrigir. Eu aprendo com as suas demos e com uma base de milhares de partidas. Alpha grátis e open source para Windows e Linux: a primeira versão aberta a todos, então ainda tem arestas para aparar.</p>
 <section id="download">{dl}<p class="note"><b>Open source</b> (Apache 2.0): todo o código do app está no <a href="{C['github']}">GitHub</a>. Cada versão também é publicada lá, com o mesmo SHA-256 desta página, ligada ao commit exato de onde foi gerada: <a href="{C['github']}/releases">versões</a>.</p></section>
 <div class="grid">
  <article class="card"><span class="eyebrow">Ao vivo</span><h3>Durante a partida</h3><ul><li>O que comprar neste round e no próximo</li><li>Para onde os Ts devem ir, atualizado com o relógio e com o que você vê</li><li>Seus caminhos e seus spots fortes no radar, as granadas que valem a pena agora</li></ul></article>
- <article class="card"><span class="eyebrow">Preparar</span><h3>Antes de jogar</h3><ul><li>Um aquecimento cronometrado montado nos seus pontos fracos (5 a 45 min)</li><li>Um servidor de treino com bots que repetem suas mortes e seus clutches de verdade</li></ul></article>
+ <article class="card"><span class="eyebrow">Preparar</span><h3>Antes de jogar</h3><ul><li>Um aquecimento montado nos seus pontos fracos, a partir de 5 minutos (até 45)</li><li>Um servidor de treino com bots que repetem suas mortes e seus clutches de verdade</li></ul></article>
  <article class="card"><span class="eyebrow">Revisão</span><h3>Depois da sessão</h3><ul><li>O que mudou em relação às suas partidas anteriores, e por quê</li><li>Seu foco da semana e os testes para tentar</li><li>Cada partida, round a round</li></ul></article>
 </div>
 <h2 id="see">Veja</h2>
@@ -128,9 +128,9 @@ def home_pt(C, dl):
 <ol class="steps">
  <li>Abra o <b>WilySetup.exe</b> e clique em <b>Install</b>: ele me baixa, confere cada parte e me instala na sua conta do Windows (sem direitos de administrador). Eu abro junto com o Windows e abro o Ao vivo sozinho quando o CS2 inicia.</li>
  <li>Na primeira vez, três passos: sua conta Steam (eu encontro), o CS2 conectado (uma opção de inicialização para colar), seu código de histórico de partidas (nenhuma chave da Steam para criar). Depois suas partidas são analisadas no seu PC, alguns minutos cada.</li>
- <li>Preparar → <b>Aquecimento</b>: o servidor de treino se instala sozinho na primeira vez (uma cópia separada do CS2 ao lado do jogo, com links para os arquivos dele, sem ocupar espaço extra).</li>
+ <li>Preparar → <b>Aquecimento</b>: o servidor de treino só se instala na primeira vez que você o abre, e roda com os arquivos do seu CS2 (links: sem segundo download, sem ocupar espaço extra).</li>
 </ol>
-<p class="note">Precisa de Windows 10 ou 11 (64 bits) ou Linux (Python 3.11+), CS2 na Steam, 8 GB de RAM e espaço para as suas demos (cerca de 250 MB por partida). O app fala português, inglês, francês, alemão, russo, espanhol e chinês.</p>
+<p class="note">Precisa de Windows 10 ou 11 (64 bits) ou Linux (Python 3.11+), CS2 na Steam, um PC com 8 GB de RAM (para o jogo e o Wily juntos) e espaço para as suas demos (cerca de 250 MB por partida). O app fala português, inglês, francês, alemão, russo, espanhol e chinês.</p>
 <h2>Jogo limpo e privacidade</h2>
 <div class="grid">
  <article class="card"><h3>Só o que a Valve oferece</h3><p>O Game State Integration (o recurso oficial do jogo para HUDs e teclados RGB), o log de console que o CS2 escreve, a Steam Web API e as demos das suas partidas. Eu nunca leio a memória do jogo nem o tráfego de rede, e nunca jogo por você. O servidor de treino é uma cópia local do jogo em que só você entra. Dá para conferir tudo: <a href="{C['github']}">o código é público</a>.</p></article>
@@ -143,11 +143,11 @@ def home_pt(C, dl):
 def home_es(C, dl):
     return f"""
 <h1>Hola, soy Wily.</h1>
-<p class="lede">Tu coach de CS2, en tu segunda pantalla. Repito tus muertes reales con bots para que vuelvas a jugar el duelo, te doy consejos en vivo durante tus partidas y te digo claramente qué corregir después. Aprendo de tus demos y de una base de miles de partidas. Alpha gratis y de código abierto para Windows y Linux: la primera versión abierta a todos, así que todavía hay detalles por pulir.</p>
+<p class="lede">Tu coach de CS2. Pongo bots exactamente donde te mataron en tus partidas reales, dentro del propio CS2, para que vuelvas a jugar el duelo hasta ganarlo. Durante tus partidas te doy consejos en vivo en tu segunda pantalla y, después, te digo claramente qué corregir. Aprendo de tus demos y de una base de miles de partidas. Alpha gratis y de código abierto para Windows y Linux: la primera versión abierta a todos, así que todavía hay detalles por pulir.</p>
 <section id="download">{dl}<p class="note"><b>Código abierto</b> (Apache 2.0): todo el código de la app está en <a href="{C['github']}">GitHub</a>. Cada versión también se publica ahí, con el mismo SHA-256 que en esta página, ligada al commit exacto con el que se construyó: <a href="{C['github']}/releases">versiones</a>.</p></section>
 <div class="grid">
  <article class="card"><span class="eyebrow">En vivo</span><h3>Durante la partida</h3><ul><li>Qué comprar esta ronda y la siguiente</li><li>A dónde van a ir probablemente los Ts, actualizado con el reloj y con lo que ves</li><li>Tus caminos y tus spots fuertes en el radar, las granadas que conviene tirar ahora</li></ul></article>
- <article class="card"><span class="eyebrow">Preparar</span><h3>Antes de jugar</h3><ul><li>Un calentamiento cronometrado armado sobre tus puntos débiles (de 5 a 45 min)</li><li>Un servidor de entrenamiento con bots que repiten tus muertes y tus clutches reales</li></ul></article>
+ <article class="card"><span class="eyebrow">Preparar</span><h3>Antes de jugar</h3><ul><li>Un calentamiento armado sobre tus puntos débiles, desde 5 minutos (hasta 45)</li><li>Un servidor de entrenamiento con bots que repiten tus muertes y tus clutches reales</li></ul></article>
  <article class="card"><span class="eyebrow">Repaso</span><h3>Después de la sesión</h3><ul><li>Qué cambió frente a tus partidas anteriores, y por qué</li><li>Tu foco de la semana y las pruebas para intentar</li><li>Cada partida, ronda por ronda</li></ul></article>
 </div>
 <h2 id="see">Míralo</h2>
@@ -161,9 +161,9 @@ def home_es(C, dl):
 <ol class="steps">
  <li>Abre <b>WilySetup.exe</b> y luego <b>Install</b>: me descarga, verifica cada parte y me instala para tu cuenta de Windows (sin permisos de administrador). Arranco con Windows y abro En vivo solo cuando arranca CS2.</li>
  <li>La primera vez, tres pasos: tu cuenta de Steam (yo la encuentro), CS2 conectado (una opción de lanzamiento para pegar), tu código de historial de partidas (ninguna clave de Steam que crear). Después tus partidas se analizan en tu PC, unos minutos cada una.</li>
- <li>Preparar → <b>Calentamiento</b>: el servidor de entrenamiento se instala solo la primera vez (una copia aparte de CS2 junto al juego, con enlaces a sus archivos, sin espacio extra).</li>
+ <li>Preparar → <b>Calentamiento</b>: el servidor de entrenamiento solo se instala la primera vez que lo abres, y funciona con los archivos de tu CS2 (enlaces: sin segunda descarga, sin espacio extra).</li>
 </ol>
-<p class="note">Necesitas Windows 10 u 11 (64 bits) o Linux (Python 3.11+), CS2 en Steam, 8 GB de RAM y espacio para tus demos (unos 250 MB por partida). La app habla español, inglés, francés, alemán, ruso, portugués y chino.</p>
+<p class="note">Necesitas Windows 10 u 11 (64 bits) o Linux (Python 3.11+), CS2 en Steam, un PC con 8 GB de RAM (para el juego y Wily juntos) y espacio para tus demos (unos 250 MB por partida). La app habla español, inglés, francés, alemán, ruso, portugués y chino.</p>
 <h2>Juego limpio y privacidad</h2>
 <div class="grid">
  <article class="card"><h3>Solo lo que Valve ofrece</h3><p>El Game State Integration (la función oficial del juego para HUDs y teclados RGB), el registro de consola que escribe CS2, la Steam Web API y las demos de tus partidas. Nunca leo la memoria del juego ni su tráfico de red, y nunca juego por ti. El servidor de entrenamiento es una copia local del juego a la que solo entras tú. Puedes comprobarlo todo: <a href="{C['github']}">el código es público</a>.</p></article>
@@ -176,11 +176,11 @@ def home_es(C, dl):
 def home_zh(C, dl):
     return f"""
 <h1>你好，我是Wily。</h1>
-<p class="lede">你在第二块屏幕上的CS2教练。我用机器人重现你真实的阵亡，让你重新打那场对枪；比赛中给你实时建议；赛后清楚地告诉你该改什么。我从你的录像和数千场比赛的数据库中学习。免费、开源的alpha版，支持Windows和Linux：这是第一个向所有人开放的版本，难免还有不完善的地方。</p>
+<p class="lede">你的CS2教练。我把机器人放回你在真实比赛中被击杀的位置，就在CS2里，让你重打那场对枪，直到赢下来。比赛中我在你的第二块屏幕上给你实时建议，赛后清楚地告诉你该改什么。我从你的录像和数千场比赛的数据库中学习。免费、开源的alpha版，支持Windows和Linux：这是第一个向所有人开放的版本，难免还有不完善的地方。</p>
 <section id="download">{dl}<p class="note"><b>开源</b>（Apache 2.0）：应用的全部代码都在<a href="{C['github']}">GitHub</a>上。每个版本也在那里发布，SHA-256与本页相同，并对应构建它的确切提交：<a href="{C['github']}/releases">版本列表</a>。</p></section>
 <div class="grid">
  <article class="card"><span class="eyebrow">实时</span><h3>比赛中</h3><ul><li>这回合和下回合该买什么</li><li>T方可能去哪里，随时钟和你看到的情况更新</li><li>雷达上你的路线和强势点位，以及现在值得扔的道具</li></ul></article>
- <article class="card"><span class="eyebrow">准备</span><h3>开打前</h3><ul><li>按你的弱点定制的计时热身（5到45分钟）</li><li>训练服务器：机器人重现你真实的阵亡和残局</li></ul></article>
+ <article class="card"><span class="eyebrow">准备</span><h3>开打前</h3><ul><li>按你的弱点定制的热身，5分钟起（最长45分钟）</li><li>训练服务器：机器人重现你真实的阵亡和残局</li></ul></article>
  <article class="card"><span class="eyebrow">复盘</span><h3>一轮结束后</h3><ul><li>与之前的比赛相比有什么变化，以及原因</li><li>你本周的重点和值得尝试的测试</li><li>每场比赛逐回合回顾</li></ul></article>
 </div>
 <h2 id="see">看看效果</h2>
@@ -194,9 +194,9 @@ def home_zh(C, dl):
 <ol class="steps">
  <li>打开<b>WilySetup.exe</b>，点击<b>Install</b>：它会下载我、校验每个部分，并为你的Windows账户安装（无需管理员权限）。我会随Windows启动，并在CS2启动时自动打开实时页。</li>
  <li>第一次启动时有三步：你的Steam账号（我会自动找到）、连接CS2（粘贴一个启动选项）、你的比赛历史记录验证码（无需创建Steam密钥）。之后你的比赛会在你的电脑上分析，每场几分钟。</li>
- <li>准备 → <b>热身</b>：训练服务器会在第一次使用时自动安装（在游戏旁边的一份独立CS2副本，链接到游戏文件，不额外占用空间）。</li>
+ <li>准备 → <b>热身</b>：训练服务器只会在你第一次打开时安装，并直接使用你的CS2游戏文件（链接方式：无需再次下载，不额外占用空间）。</li>
 </ol>
-<p class="note">需要Windows 10或11（64位）或Linux（Python 3.11+）、Steam上的CS2、8 GB内存，以及存放录像的磁盘空间（每场约250 MB）。应用支持中文、英语、法语、德语、俄语、葡萄牙语和西班牙语。</p>
+<p class="note">需要Windows 10或11（64位）或Linux（Python 3.11+）、Steam上的CS2、一台8 GB内存的电脑（游戏和Wily一起使用），以及存放录像的磁盘空间（每场约250 MB）。应用支持中文、英语、法语、德语、俄语、葡萄牙语和西班牙语。</p>
 <h2>公平竞技与隐私</h2>
 <div class="grid">
  <article class="card"><h3>只用Valve提供的东西</h3><p>游戏状态集成（Game State Integration，游戏为HUD和RGB键盘提供的官方功能）、CS2写入的控制台日志、Steam Web API，以及你比赛的录像。我从不读取游戏内存或网络流量，也从不替你操作。训练服务器是只有你会加入的本地游戏副本。一切都可以核查：<a href="{C['github']}">代码是公开的</a>。</p></article>
@@ -209,11 +209,11 @@ def home_zh(C, dl):
 def home_de(C, dl):
     return f"""
 <h1>Hi, ich bin Wily.</h1>
-<p class="lede">Dein CS2-Coach auf deinem zweiten Bildschirm. Ich spiele deine echten Tode mit Bots nach, damit du das Duell noch einmal nehmen kannst, gebe dir während deiner Matches Live-Tipps und sage dir danach klar, was du korrigieren solltest. Ich lerne aus deinen Demos und aus einer Datenbank mit Tausenden von Matches. Kostenlose Open-Source-Alpha für Windows und Linux: die erste Version, die für alle offen ist, also rechne mit Ecken und Kanten.</p>
+<p class="lede">Dein CS2-Coach. Ich setze Bots genau dorthin, wo du in deinen echten Matches getötet wurdest, direkt in CS2, damit du das Duell wiederholst, bis du es gewinnst. Während deiner Matches gebe ich dir Live-Tipps auf deinem zweiten Bildschirm, und danach sage ich dir klar, was du korrigieren solltest. Ich lerne aus deinen Demos und aus einer Datenbank mit Tausenden von Matches. Kostenlose Open-Source-Alpha für Windows und Linux: die erste Version, die für alle offen ist, also rechne mit Ecken und Kanten.</p>
 <section id="download">{dl}<p class="note"><b>Open Source</b> (Apache 2.0): Jede Zeile der App steht auf <a href="{C['github']}">GitHub</a>. Jede Version wird auch dort veröffentlicht, mit derselben SHA-256 wie auf dieser Seite und verknüpft mit dem genauen Commit, aus dem sie gebaut wurde: <a href="{C['github']}/releases">Versionen</a>.</p></section>
 <div class="grid">
  <article class="card"><span class="eyebrow">Live</span><h3>Während des Matches</h3><ul><li>Was du diese Runde und die nächste kaufen solltest</li><li>Wohin die Ts wahrscheinlich gehen, aktualisiert mit der Uhr und dem, was du siehst</li><li>Deine Wege und deine starken Spots auf dem Radar, die Granaten, die sich jetzt lohnen</li></ul></article>
- <article class="card"><span class="eyebrow">Vorbereitung</span><h3>Vor dem Spielen</h3><ul><li>Ein getimtes Aufwärmen, aufgebaut auf deinen Schwächen (5 bis 45 Min.)</li><li>Ein Trainingsserver mit Bots, die deine echten Tode und Clutches nachspielen</li></ul></article>
+ <article class="card"><span class="eyebrow">Vorbereitung</span><h3>Vor dem Spielen</h3><ul><li>Ein Aufwärmen, aufgebaut auf deinen Schwächen, ab 5 Minuten (bis 45)</li><li>Ein Trainingsserver mit Bots, die deine echten Tode und Clutches nachspielen</li></ul></article>
  <article class="card"><span class="eyebrow">Auswertung</span><h3>Nach der Session</h3><ul><li>Was sich gegenüber deinen vorherigen Matches geändert hat, und warum</li><li>Dein Fokus der Woche und die Experimente zum Ausprobieren</li><li>Jedes Match Runde für Runde</li></ul></article>
 </div>
 <h2 id="see">So sieht es aus</h2>
@@ -227,9 +227,9 @@ def home_de(C, dl):
 <ol class="steps">
  <li>Öffne <b>WilySetup.exe</b>, dann <b>Install</b>: Es lädt mich herunter, prüft jeden Teil und installiert mich für dein Windows-Konto (ohne Administratorrechte). Ich starte mit Windows und öffne Live von selbst, wenn CS2 startet.</li>
  <li>Beim ersten Start drei Schritte: dein Steam-Konto (ich finde es), CS2 verbinden (eine Startoption zum Einfügen), dein Verlaufscode für Matches (kein Steam-Schlüssel nötig). Danach werden deine Matches auf deinem PC analysiert, jedes in ein paar Minuten.</li>
- <li>Vorbereitung → <b>Aufwärmen</b>: Der Trainingsserver installiert sich beim ersten Mal von selbst (eine eigene Kopie von CS2 neben dem Spiel, Verknüpfungen auf seine Dateien, kein zusätzlicher Platz).</li>
+ <li>Vorbereitung → <b>Aufwärmen</b>: Der Trainingsserver installiert sich erst, wenn du ihn zum ersten Mal öffnest, und läuft mit den Dateien deines CS2 (Verknüpfungen: kein zweiter Download, kein zusätzlicher Platz).</li>
 </ol>
-<p class="note">Du brauchst Windows 10 oder 11 (64 Bit) oder Linux (Python 3.11+), CS2 auf Steam, 8 GB RAM und Platz für deine Demos (etwa 250 MB pro Match). Die App spricht Deutsch, Englisch, Französisch, Russisch, Portugiesisch, Spanisch und Chinesisch.</p>
+<p class="note">Du brauchst Windows 10 oder 11 (64 Bit) oder Linux (Python 3.11+), CS2 auf Steam, einen PC mit 8 GB RAM (für das Spiel und Wily zusammen) und Platz für deine Demos (etwa 250 MB pro Match). Die App spricht Deutsch, Englisch, Französisch, Russisch, Portugiesisch, Spanisch und Chinesisch.</p>
 <h2>Fair Play und Datenschutz</h2>
 <div class="grid">
  <article class="card"><h3>Nur, was Valve bereitstellt</h3><p>Game State Integration (die offizielle Funktion des Spiels für HUDs und RGB-Tastaturen), das Konsolen-Log, das CS2 schreibt, die Steam Web API und die Demos deiner Matches. Ich lese nie den Speicher oder den Netzwerkverkehr des Spiels und spiele nie für dich. Der Trainingsserver ist eine lokale Kopie des Spiels, der nur du beitrittst. Du kannst alles nachprüfen: <a href="{C['github']}">der Code ist öffentlich</a>.</p></article>

@@ -7,7 +7,8 @@ typed at the prompt (or in the COACH_FTP_PASSWORD variable of this window only) 
     python website/deploy.py                       the pages, the API and the latest release
     python website/deploy.py --host <ftp host> --user <account> --dir <the site's folder>
                                                 the first time (kept in out/settings.json "deploy", without password)
-    options: --dry-run (lists what would go), --prune (removes the releases no longer in latest.json)
+    options: --dry-run (lists what would go), --prune (removes the releases no longer in latest.json),
+             --no-indexnow (no word to the search engines after it)
 
 Order: the release files first, latest.json and its signature last, so an app never reads a manifest whose files
 are not there yet. A file goes up under a temporary name, then is renamed."""
@@ -108,6 +109,31 @@ def site_dir(ftp, rdir):
                      f"python website/deploy.py --dir <folder>")
 
 
+def indexnow():
+    """The pages of the sitemap told to the search engines that take IndexNow (03/11: Bing, which also feeds Copilot,
+    DuckDuckGo, Ecosia's Bing share and, Microsoft says, ChatGPT search; Yandex, Seznam, Naver, Yep): one call to
+    api.indexnow.org, the key the site's root file proves (website/root/<key>.txt)."""
+    import glob
+    import re
+    import urllib.request
+    keys = [os.path.basename(f)[:-4] for f in glob.glob(os.path.join(SRC, "*.txt"))
+            if re.fullmatch(r"[0-9a-f]{32}", os.path.basename(f)[:-4])]
+    sm = os.path.join(SRC, "sitemap.xml")
+    if not keys or not os.path.exists(sm):
+        log("IndexNow: no key file or no sitemap, nothing said")
+        return
+    site = "https://wily.valentingassend.com"
+    urls = re.findall(r"<loc>([^<]+)</loc>", open(sm, encoding="utf-8").read())
+    body = json.dumps({"host": site.split("//")[1], "key": keys[0], "keyLocation": f"{site}/{keys[0]}.txt", "urlList": urls}).encode()
+    req = urllib.request.Request("https://api.indexnow.org/indexnow", data=body, method="POST",
+                                 headers={"Content-Type": "application/json; charset=utf-8"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            log(f"IndexNow: {len(urls)} pages told ({r.status})")
+    except Exception as e:   # 200/202 taken; 403 the key file not online yet; 422 a url not of this host
+        log(f"IndexNow: not told ({e})")
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     if not os.path.isdir(SRC):
@@ -180,6 +206,8 @@ def main():
                 log(f"  removed releases/{b}")
     ftp.quit()
     log(f"published: {sent} file(s) sent, {kept} file(s) already there as they are · https://wily.valentingassend.com")
+    if sent and "--no-indexnow" not in sys.argv:
+        indexnow()
 
 
 if __name__ == "__main__":
