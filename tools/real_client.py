@@ -1662,6 +1662,9 @@ PUMP_LEAD = 0.3
 # an AWP's lead, times LEAD (10/11: at 1.0, 167 of its 197 shots at crossers in rounds 23-28 went ahead of them, 20 u at the
 # median at 150-400 u, 18 behind; a single shot, its bolt after a miss: cut as the shotgun's was)
 SNIPER_LEAD = 0.4
+# a rifle's tap past 600 u, times LEAD (10/11: 309 of its 379 taps at crossers in rounds 23-28 went ahead of them, 17-20 u at
+# the median with 23-26 u of lead, 7 to 11 % of them hit; its bursts closer were within 7 u, kept as they are)
+FAR_LEAD = 0.3
 SHOT_LAG = 0.13   # the settle before a shot only (30/10, his order: his 0.3 s, a first damage in 0.4-0.5 s; 0.2 held its first shot 0.36 s at the median)
 PRESS_R8 = 0.33   # the R8's left click held till its hammer falls (29/10)
 
@@ -2181,7 +2184,8 @@ def fight(sniper=False, timeout=6.0, reach=None, pump=None, far_switch=False):
 
         # a shotgun leads them more (03/11, rounds 20-21: its misses on movers 27 behind them, 12 ahead, at 170 u and 150 u/s
         # across; the M4's 127 behind, 113 ahead)
-        lead = LEAD * (PUMP_LEAD if pump else SNIPER_LEAD if sniper else 1.0)
+        lead = LEAD * (PUMP_LEAD if pump else SNIPER_LEAD if sniper else
+                       FAR_LEAD if p and math.dist(p[:2], b["pos"][:2]) > 600 else 1.0)
 
         def point(slot=slot, drop=drop):
             nonlocal b
